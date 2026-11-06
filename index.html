@@ -50,11 +50,6 @@
     gap: 0; align-items: stretch; margin-bottom: 22px;
     /* let the browser skip painting rows that are off-screen */
     content-visibility: auto; contain-intrinsic-size: auto 100px; }
-  /* Pencil troubleshooting variants (?v=2, ?v=3) */
-  html.no-cv .row { content-visibility: visible; contain-intrinsic-size: none; }
-  html.no-scroll, html.no-scroll body { overflow: hidden; height: 100%; overscroll-behavior: none; }
-  html.no-scroll body { position: fixed; inset: 0; touch-action: none; }
-  #variant { font: 13px ui-monospace, monospace; background: #b23a3a; color: #fff; padding: 4px 8px; border-radius: 6px; }
   /* one cheap SVG image for the dashed cross guide (no gradients / pseudo-elements) */
   .cell { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--border); margin-left: -1px;
     background: var(--paper) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpath d='M50 0V100M0 50H100' stroke='%23e7b3b3' stroke-width='1' stroke-dasharray='4 4' vector-effect='non-scaling-stroke' fill='none'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
@@ -170,16 +165,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
   let scale = Number(store.get('kanji.scale', '0')); // 0 = all 12 on one line, 1 = 6 per line
   penOnlyEl.checked = store.get('kanji.penOnly', '1') === '1';
 
-  // Pencil troubleshooting variants, cumulative: ?v=1 guard on each box,
-  // ?v=2 + no content-visibility, ?v=3 + page doesn't scroll (like test page)
-  const V = Number((location.search.match(/[?&]v=(\d)/) || [])[1] || 0);
-  if (V >= 2) document.documentElement.classList.add('no-cv');
-  if (V >= 3) document.documentElement.classList.add('no-scroll');
-  if (V) {
-    const b = Object.assign(document.createElement('span'), { id: 'variant', textContent: 'test v' + V });
-    document.querySelector('header h1').after(b);
-  }
-
   const pads = [];       // all drawing pads
   const history = [];    // stack of pads in stroke order, for global undo
 
@@ -289,12 +274,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
   // Coordinates: one character square = 100 units, so a box for an
   // n-character word is 100n × 100.
   function makePad(cell, n = 1) {
-    if (V >= 1) {
-      // v1: touch guard directly on the box, exactly like the test page's pad
-      const g = e => { if (!e.target.closest('button')) e.preventDefault(); };
-      cell.addEventListener('touchstart', g, { passive: false });
-      cell.addEventListener('touchmove', g, { passive: false });
-    }
     let svg = null, rect = null, livePath = null;
     const pad = { cell, strokes: [], current: null };
     pads.push(pad);
@@ -321,6 +300,10 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
         ...STROKE_OPTIONS,
         size: STROKE_SIZE,
         simulatePressure: !stroke.realPressure,
+        // While writing, no end taper: otherwise the newest ink is thinned to
+        // nothing at the pen tip and the line seems to lag behind the Pencil.
+        // The end taper is applied once the Pencil lifts.
+        end: done ? STROKE_OPTIONS.end : { taper: 0, cap: true },
         last: done,
       }));
     }
@@ -355,7 +338,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       livePath = newPath();
       livePath.setAttribute('d', pathData(pad.current, false));
     });
-    let raf = 0;
     cell.addEventListener('pointermove', e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
       e.preventDefault();
@@ -366,10 +348,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
         if (prev && Math.hypot(q.x - prev.x, q.y - prev.y) < 0.6) continue;
         pad.current.pts.push(q);
       }
-      if (!raf) raf = requestAnimationFrame(() => {
-        raf = 0;
-        if (pad.current && livePath) livePath.setAttribute('d', pathData(pad.current, false));
-      });
+      // update immediately on every Pencil movement (no waiting for the next frame)
+      if (livePath) livePath.setAttribute('d', pathData(pad.current, false));
     });
     const end = e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
