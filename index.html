@@ -35,11 +35,7 @@
   .spacer { flex: 1; }
   #dbg { position: fixed; right: 8px; bottom: 8px; z-index: 50; margin: 0; padding: 8px 10px;
     background: rgba(0,0,0,.78); color: #9f9; font: 11px/1.35 ui-monospace, monospace;
-    border-radius: 8px; pointer-events: none; max-width: 60vw; white-space: pre; }
-  .stroke-size { display: inline-flex; align-items: center; gap: 6px; }
-  .stroke-size button { width: 40px; padding: 8px 0; font-size: 18px; line-height: 1; }
-  #strokeSizeLabel { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; font-size: 15px; }
-  .pager { display: inline-flex; gap: 6px; align-items: center; }
+    border-radius: 8px; pointer-events: none; max-width: 60vw; white-space: pre; }  .pager { display: inline-flex; gap: 6px; align-items: center; }
   .pager select { font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px;
     border: 1px solid #d6cfc2; background: #fff; color: var(--ink); }
   .pager button:disabled { opacity: 0.35; }
@@ -99,13 +95,7 @@
   <button id="editBtn">✏️ Edit words</button>
   <button id="undoBtn">↶ Undo</button>
   <button id="clearAllBtn">Clear all</button>
-  <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>
-  <span class="stroke-size" role="group" aria-label="Stroke size">
-    <button id="strokeMinus" aria-label="Thinner stroke">−</button>
-    <span id="strokeSizeLabel" title="Stroke size">100%</span>
-    <button id="strokePlus" aria-label="Thicker stroke">+</button>
-  </span>
-  <span class="pager">
+  <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>  <span class="pager">
     <button id="prevPage" aria-label="Previous page">‹</button>
     <select id="pageSelect" aria-label="Page"></select>
     <button id="nextPage" aria-label="Next page">›</button>
@@ -190,21 +180,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
   // "big" mode shows fewer, larger boxes per visual line (wraps the 12 boxes)
   let scale = Number(store.get('kanji.scale', '0')); // 0 = all 12 on one line, 1 = 6 per line
   penOnlyEl.checked = store.get('kanji.penOnly', '1') === '1';
-
-  // Stroke size: − / + in 5% steps (100% = default size). Applies to
-  // existing writing too.
-  const sizeLabel = document.getElementById('strokeSizeLabel');
-  let penScale = Number(store.get('kanji.strokeScale', '1')) || 1;
-  function setPenScale(v) {
-    penScale = Math.round(Math.min(3, Math.max(0.3, v)) * 100) / 100;
-    store.set('kanji.strokeScale', String(penScale));
-    sizeLabel.textContent = Math.round(penScale * 100) + '%';
-    pads.forEach(p => p.rerender && p.rerender());
-  }
-  document.getElementById('strokeMinus').onclick = () => setPenScale(penScale - 0.05);
-  document.getElementById('strokePlus').onclick = () => setPenScale(penScale + 0.05);
-  sizeLabel.textContent = Math.round(penScale * 100) + '%';
-
   const pads = [];       // all drawing pads
   const padByCell = new WeakMap();
   // iPad (iPadOS reports itself as a Mac, so also check for touch support)
@@ -355,7 +330,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       const pts = stroke.pts.map(p => [p.x, p.y, p.p]);
       return svgPathFromStroke(getStroke(pts, {
         ...STROKE_OPTIONS,
-        size: STROKE_SIZE * penScale,
+        size: STROKE_SIZE,
         simulatePressure: !stroke.realPressure,
         last: done,
       }));
@@ -434,10 +409,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       if (s && s.el) s.el.remove();
       if (!pad.strokes.length) dropSvg();
     };
-    pad.resize = () => {};        // SVG scales by itself
-    // re-draw finished strokes (used when the stroke size changes)
-    pad.rerender = () => { for (const s of pad.strokes) s.el.setAttribute('d', pathData(s, true)); };
-    return pad;
+    pad.resize = () => {};        // SVG scales by itself    return pad;
   }
 
   // Palm rejection, done the way the perfect-freehand example does it:
