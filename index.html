@@ -187,9 +187,10 @@
     }
 
     function lineWidth(p) {
-      const base = canvas.width / 22;                 // relative to box size
+      // thin, pencil-like line with a little pressure response
+      const base = canvas.width / 50;                 // relative to box size
       const pr = p.pressure > 0 ? p.pressure : 0.5;
-      return base * (0.45 + pr * 0.9);
+      return Math.max(1.5, base * (0.6 + pr * 0.6));
     }
 
     function drawSegment(pts, i) {
@@ -277,22 +278,37 @@
     return pad;
   }
 
-  // Finger scrolling while in "Pencil only" mode (canvases block native touch scrolling)
+  // Palm rejection: inside the practice sheet, cancel every native touch behaviour
+  // (long-press callout, magnifier, text selection, double-tap zoom) for both
+  // the palm and the Pencil. Finger scrolling is then done by hand below.
   let touchScroll = null;
-  document.addEventListener('touchstart', e => {
-    if (!penOnlyEl.checked || e.touches.length !== 1) return;
-    const t = e.touches[0];
-    if (t.touchType === 'stylus') return;
-    if (e.target.tagName === 'CANVAS') touchScroll = { y: t.clientY };
-  }, { passive: true });
-  document.addEventListener('touchmove', e => {
-    if (!touchScroll) return;
-    const t = e.touches[0];
-    if (t.touchType === 'stylus') return;
+  let lastPenAt = 0;
+  const penBusy = () => pads.some(p => p.current) || Date.now() - lastPenAt < 600;
+
+  sheet.addEventListener('touchstart', e => {
+    if (e.target.closest('button')) return;      // keep row clear buttons tappable
+    e.preventDefault();
+    const fingers = [...e.touches].filter(t => t.touchType !== 'stylus');
+    if (penOnlyEl.checked && fingers.length === 1 && e.touches.length === 1 && !penBusy()) {
+      touchScroll = { id: fingers[0].identifier, y: fingers[0].clientY };
+    } else {
+      touchScroll = null;                          // a palm or extra contact: never scroll
+    }
+  }, { passive: false });
+  sheet.addEventListener('touchmove', e => {
+    e.preventDefault();
+    if (!touchScroll || penBusy()) return;
+    const t = [...e.touches].find(t => t.identifier === touchScroll.id);
+    if (!t) return;
     window.scrollBy(0, touchScroll.y - t.clientY);
     touchScroll.y = t.clientY;
-  }, { passive: true });
-  document.addEventListener('touchend', () => { touchScroll = null; });
+  }, { passive: false });
+  sheet.addEventListener('touchend', () => { touchScroll = null; });
+  sheet.addEventListener('touchcancel', () => { touchScroll = null; });
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('selectstart', e => { if (!e.target.closest || !e.target.closest('textarea')) e.preventDefault(); });
+  document.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') lastPenAt = Date.now(); }, true);
+  document.addEventListener('pointerup', e => { if (e.pointerType === 'pen') lastPenAt = Date.now(); }, true);
 
   // Controls
   document.getElementById('editBtn').onclick = () => {
