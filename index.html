@@ -47,25 +47,23 @@
   #editor p { margin: 6px 0 10px; color: var(--muted); font-size: 14px; }
   main { padding: 16px; }
   .row { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)) 44px;
-    gap: 0; align-items: stretch; margin-bottom: 22px; }
-  .cell { position: relative; aspect-ratio: 1 / 1; background: var(--paper);
-    border: 1px solid var(--border); margin-left: -1px;
-    background-image:
-      linear-gradient(to right, transparent calc(50% - 0.5px), var(--guide) calc(50% - 0.5px), var(--guide) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
-      linear-gradient(to bottom, transparent calc(50% - 0.5px), var(--guide) calc(50% - 0.5px), var(--guide) calc(50% + 0.5px), transparent calc(50% + 0.5px));
-    background-size: 100% 100%; }
+    gap: 0; align-items: stretch; margin-bottom: 22px;
+    /* let the browser skip painting rows that are off-screen */
+    content-visibility: auto; contain-intrinsic-size: auto 100px; }
+  /* one cheap SVG image for the dashed cross guide (no gradients / pseudo-elements) */
+  .cell { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--border); margin-left: -1px;
+    background: var(--paper) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpath d='M50 0V100M0 50H100' stroke='%23e7b3b3' stroke-width='1' stroke-dasharray='4 4' vector-effect='non-scaling-stroke' fill='none'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
+    touch-action: none; }
+  /* Pencil-only mode: fingers scroll natively (smooth, with momentum) */
+  body.pen-only .cell { touch-action: pan-y; }
   .cell:first-child { margin-left: 0; }
-  /* dash the guide lines by masking with a repeating pattern */
-  .cell::before { content: ""; position: absolute; inset: 0; pointer-events: none;
-    background:
-      repeating-linear-gradient(to right, var(--paper) 0 4px, transparent 4px 8px) center / 100% 1px no-repeat,
-      repeating-linear-gradient(to bottom, var(--paper) 0 4px, transparent 4px 8px) center / 1px 100% no-repeat; }
   .glyph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    font-family: "Klee One", "Hiragino Mincho ProN", serif; line-height: 1; pointer-events: none; }
+    font-family: "Klee One", "Hiragino Mincho ProN", serif; line-height: 1; pointer-events: none;
+    white-space: nowrap; overflow: hidden; }
   .model .glyph { font-weight: 600; color: var(--ink); }
   .trace .glyph { font-weight: 400; color: rgba(0,0,0,0.13); }
   .model { background-color: #fffdf6; }
-  canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
   .row-actions { display: flex; align-items: center; justify-content: center; }
   .row-actions button { padding: 6px; width: 36px; height: 36px; border-radius: 50%; font-size: 16px; line-height: 1; }
   .empty { color: var(--muted); text-align: center; margin-top: 60px; }
@@ -222,18 +220,36 @@
     });
   }
 
+  // A pad is a writable box. Its <canvas> is only created the first time you
+  // write in it, and removed again when cleared — so a page of 330 boxes
+  // holds just a handful of canvases instead of 330 full-resolution ones.
   function makePad(cell) {
-    const canvas = document.createElement('canvas');
-    cell.appendChild(canvas);
-    const ctx = canvas.getContext('2d');
-    const pad = { canvas, strokes: [], current: null };
+    let canvas = null, ctx = null, rect = null;
+    const pad = { cell, strokes: [], current: null };
     pads.push(pad);
 
+    function ensureCanvas() {
+      if (canvas) return;
+      canvas = document.createElement('canvas');
+      cell.appendChild(canvas);
+      ctx = canvas.getContext('2d');
+      sizeCanvas();
+    }
+    function dropCanvas() {
+      if (!canvas) return;
+      canvas.width = canvas.height = 0;   // release memory right away on iOS
+      canvas.remove();
+      canvas = ctx = null;
+    }
+    function sizeCanvas() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = cell.clientWidth, h = cell.clientHeight;
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
     function resize() {
-      const dpr = window.devicePixelRatio || 1;
-      const r = canvas.getBoundingClientRect();
-      canvas.width = Math.round(r.width * dpr);
-      canvas.height = Math.round(r.height * dpr);
+      if (!canvas) return;
+      sizeCanvas();
       redraw();
     }
 
@@ -269,6 +285,7 @@
     }
 
     function redraw() {
+      if (!canvas) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       // strokes are stored in 0..1 coordinates so they survive resizes
       for (const s of pad.strokes) drawStroke(s);
@@ -287,25 +304,26 @@
       arr.push(q);
     }
 
+    // rect is measured once per stroke, not on every move event
     function pt(e) {
-      const r = canvas.getBoundingClientRect();
-      return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height,
-               pressure: e.pointerType === 'mouse' ? 0.5 : e.pressure };
+      return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
     }
 
     function allowed(e) {
       return !(penOnlyEl.checked && e.pointerType === 'touch');
     }
 
-    canvas.addEventListener('pointerdown', e => {
+    cell.addEventListener('pointerdown', e => {
       if (!allowed(e)) return;
       e.preventDefault();
-      try { canvas.setPointerCapture(e.pointerId); } catch {}
+      ensureCanvas();
+      rect = cell.getBoundingClientRect();
+      try { cell.setPointerCapture(e.pointerId); } catch {}
       pad.current = { id: e.pointerId, pts: [pt(e)] };
       redraw();
     });
     let raf = 0;
-    canvas.addEventListener('pointermove', e => {
+    cell.addEventListener('pointermove', e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
       e.preventDefault();
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
@@ -320,43 +338,33 @@
       history.push(pad);
       redraw();
     };
-    canvas.addEventListener('pointerup', end);
-    canvas.addEventListener('pointercancel', end);
+    cell.addEventListener('pointerup', end);
+    cell.addEventListener('pointercancel', end);
 
-    pad.clear = () => { pad.strokes = []; redraw(); };
-    pad.undo = () => { pad.strokes.pop(); redraw(); };
+    pad.clear = () => { pad.strokes = []; pad.current = null; dropCanvas(); };
+    pad.undo = () => { pad.strokes.pop(); pad.strokes.length ? redraw() : dropCanvas(); };
     pad.resize = resize;
-    requestAnimationFrame(resize);
     return pad;
   }
 
-  // Palm rejection: inside the practice sheet, cancel every native touch behaviour
-  // (long-press callout, magnifier, text selection, double-tap zoom) for both
-  // the palm and the Pencil. Finger scrolling is then done by hand below.
-  let touchScroll = null;
+  // Touch handling. Fingers scroll natively (smooth, with momentum) via
+  // `touch-action: pan-y`. We only cancel the touches that should NOT scroll
+  // or trigger long-press: the Pencil, a resting palm, and any touch made
+  // while you are writing.
   let lastPenAt = 0;
-  const penBusy = () => pads.some(p => p.current) || Date.now() - lastPenAt < 600;
+  const penBusy = () => pads.some(p => p.current) || Date.now() - lastPenAt < 800;
+  const isPalm = t => (t.radiusX || 0) > 22 || (t.radiusY || 0) > 22;
 
   sheet.addEventListener('touchstart', e => {
     if (e.target.closest('button')) return;      // keep row clear buttons tappable
-    e.preventDefault();
-    const fingers = [...e.touches].filter(t => t.touchType !== 'stylus');
-    if (penOnlyEl.checked && fingers.length === 1 && e.touches.length === 1 && !penBusy()) {
-      touchScroll = { id: fingers[0].identifier, y: fingers[0].clientY };
-    } else {
-      touchScroll = null;                          // a palm or extra contact: never scroll
-    }
+    if (!penOnlyEl.checked) { e.preventDefault(); return; }  // fingers draw: no scrolling
+    const ts = [...e.changedTouches];
+    if (ts.some(t => t.touchType === 'stylus') || ts.some(isPalm) || penBusy()) e.preventDefault();
   }, { passive: false });
   sheet.addEventListener('touchmove', e => {
-    e.preventDefault();
-    if (!touchScroll || penBusy()) return;
-    const t = [...e.touches].find(t => t.identifier === touchScroll.id);
-    if (!t) return;
-    window.scrollBy(0, touchScroll.y - t.clientY);
-    touchScroll.y = t.clientY;
+    if (!penOnlyEl.checked) { e.preventDefault(); return; }
+    if ([...e.touches].some(t => t.touchType === 'stylus') || penBusy()) e.preventDefault();
   }, { passive: false });
-  sheet.addEventListener('touchend', () => { touchScroll = null; });
-  sheet.addEventListener('touchcancel', () => { touchScroll = null; });
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('selectstart', e => { if (!e.target.closest || !e.target.closest('textarea')) e.preventDefault(); });
   document.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') lastPenAt = Date.now(); }, true);
@@ -403,7 +411,9 @@
   document.getElementById('clearAllBtn').onclick = () => {
     if (confirm('Clear all writing?')) { pads.forEach(p => p.clear()); history.length = 0; }
   };
-  penOnlyEl.onchange = () => store.set('kanji.penOnly', penOnlyEl.checked ? '1' : '0');
+  const syncPenOnly = () => document.body.classList.toggle('pen-only', penOnlyEl.checked);
+  syncPenOnly();
+  penOnlyEl.onchange = () => { store.set('kanji.penOnly', penOnlyEl.checked ? '1' : '0'); syncPenOnly(); };
   document.getElementById('sizeUp').onclick = () => { if (!scale) { scale = 1; store.set('kanji.scale', '1'); render(); } };
   document.getElementById('sizeDown').onclick = () => { if (scale) { scale = 0; store.set('kanji.scale', '0'); render(); } };
 
