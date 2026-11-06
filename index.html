@@ -123,8 +123,10 @@ const STROKE_OPTIONS = {
   streamline: 0.5,
   smoothing: 0.5,
   easing: t => t,                 // linear
-  start: { taper: 0, cap: true },
-  end: { taper: 0, cap: true },
+  // A short taper at both ends stops the round "ink blot" that appears where
+  // the pen lands and lifts (pressure peaks there and the pen moves slowly).
+  start: { taper: 6, cap: true },
+  end: { taper: 9, cap: true },
 };
 
 // Outline points -> SVG path, exactly like the example (getSvgPathFromStroke)
@@ -339,7 +341,12 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       if (!pad.current || pad.current.id !== e.pointerId) return;
       e.preventDefault();
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      for (const ev of (evs.length ? evs : [e])) pad.current.pts.push(pt(ev));
+      for (const ev of (evs.length ? evs : [e])) {
+        const q = pt(ev), prev = pad.current.pts[pad.current.pts.length - 1];
+        // skip samples while the pen rests in place (they pile ink into a blot)
+        if (prev && Math.hypot(q.x - prev.x, q.y - prev.y) < 0.6) continue;
+        pad.current.pts.push(q);
+      }
       if (!raf) raf = requestAnimationFrame(() => {
         raf = 0;
         if (pad.current && livePath) livePath.setAttribute('d', pathData(pad.current, false));
