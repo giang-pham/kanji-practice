@@ -237,42 +237,33 @@
       redraw();
     }
 
-    function lineWidth(p) {
-      // thin, pencil-like line with a little pressure response
-      const base = canvas.width / 50;                 // relative to box size
-      const pr = p.pressure > 0 ? p.pressure : 0.5;
-      return Math.max(1.5, base * (0.6 + pr * 0.6));
-    }
-
-    function drawSegment(pts, i) {
-      // smooth with quadratic curves through midpoints
-      const a = pts[i - 2] || pts[i - 1], b = pts[i - 1], c = pts[i];
-      const m1 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const m2 = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2 };
-      ctx.lineWidth = lineWidth(c);
-      ctx.beginPath();
-      ctx.moveTo(m1.x, m1.y);
-      ctx.quadraticCurveTo(b.x, b.y, m2.x, m2.y);
-      ctx.stroke();
+    // Ball-pen style: constant width, each stroke drawn as ONE continuous
+    // smoothed path, so there are no joins or gaps between segments.
+    function lineWidth() {
+      return Math.max(2, canvas.width / 55);
     }
 
     function drawStroke(pts) {
-      ctx.strokeStyle = '#111';
-      ctx.fillStyle = '#111';
+      const s = pts.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
+      ctx.strokeStyle = '#1c1f2b';
+      ctx.fillStyle = '#1c1f2b';
+      ctx.lineWidth = lineWidth();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      if (pts.length === 1) {
+      if (s.length === 1) {
         ctx.beginPath();
-        ctx.arc(pts[0].x, pts[0].y, lineWidth(pts[0]) / 2, 0, Math.PI * 2);
+        ctx.arc(s[0].x, s[0].y, lineWidth() / 2, 0, Math.PI * 2);
         ctx.fill();
         return;
       }
-      for (let i = 1; i < pts.length; i++) drawSegment(pts, i);
-      // finish the tail to the last point
-      const last = pts[pts.length - 1], prev = pts[pts.length - 2];
-      ctx.lineWidth = lineWidth(last);
       ctx.beginPath();
-      ctx.moveTo((prev.x + last.x) / 2, (prev.y + last.y) / 2);
+      ctx.moveTo(s[0].x, s[0].y);
+      // quadratic curves through the midpoints of consecutive points
+      for (let i = 1; i < s.length - 1; i++) {
+        const mx = (s[i].x + s[i + 1].x) / 2, my = (s[i].y + s[i + 1].y) / 2;
+        ctx.quadraticCurveTo(s[i].x, s[i].y, mx, my);
+      }
+      const last = s[s.length - 1];
       ctx.lineTo(last.x, last.y);
       ctx.stroke();
     }
@@ -280,9 +271,20 @@
     function redraw() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       // strokes are stored in 0..1 coordinates so they survive resizes
-      for (const s of pad.strokes) {
-        drawStroke(s.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height, pressure: p.pressure })));
-      }
+      for (const s of pad.strokes) drawStroke(s);
+      if (pad.current) drawStroke(pad.current.pts);
+    }
+
+    // light low-pass filter on input to remove hand jitter
+    function smoothPush(arr, p) {
+      const prev = arr[arr.length - 1];
+      if (!prev) { arr.push(p); return; }
+      const k = 0.55; // 0 = frozen, 1 = raw input
+      const q = { x: prev.x + (p.x - prev.x) * k, y: prev.y + (p.y - prev.y) * k };
+      // skip points that barely moved (avoids tiny kinks)
+      const dx = (q.x - prev.x) * canvas.width, dy = (q.y - prev.y) * canvas.height;
+      if (dx * dx + dy * dy < 0.5) return;
+      arr.push(q);
     }
 
     function pt(e) {
@@ -298,22 +300,21 @@
     canvas.addEventListener('pointerdown', e => {
       if (!allowed(e)) return;
       e.preventDefault();
-      canvas.setPointerCapture(e.pointerId);
+      try { canvas.setPointerCapture(e.pointerId); } catch {}
       pad.current = { id: e.pointerId, pts: [pt(e)] };
-      ctx.strokeStyle = '#111'; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      redraw();
     });
+    let raf = 0;
     canvas.addEventListener('pointermove', e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
       e.preventDefault();
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      for (const ev of (evs.length ? evs : [e])) {
-        pad.current.pts.push(pt(ev));
-        const pts = pad.current.pts.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height, pressure: p.pressure }));
-        if (pts.length >= 2) drawSegment(pts, pts.length - 1);
-      }
+      for (const ev of (evs.length ? evs : [e])) smoothPush(pad.current.pts, pt(ev));
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; redraw(); });
     });
     const end = e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
+      pad.current.pts.push(pt(e));          // land exactly where the pen lifted
       pad.strokes.push(pad.current.pts);
       pad.current = null;
       history.push(pad);
