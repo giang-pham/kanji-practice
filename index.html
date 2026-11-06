@@ -54,8 +54,6 @@
   .cell { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--border); margin-left: -1px;
     background: var(--paper) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpath d='M50 0V100M0 50H100' stroke='%23e7b3b3' stroke-width='1' stroke-dasharray='4 4' vector-effect='non-scaling-stroke' fill='none'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
     touch-action: none; }
-  /* Pencil-only mode: fingers scroll natively (smooth, with momentum) */
-  body.pen-only .cell { touch-action: pan-y; }
   .cell:first-child { margin-left: 0; }
   .glyph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     font-family: "Klee One", "Hiragino Mincho ProN", serif; line-height: 1; pointer-events: none;
@@ -375,28 +373,23 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
     return pad;
   }
 
-  // Touch handling. Fingers scroll natively (smooth, with momentum) via
-  // `touch-action: pan-y`. We only cancel the touches that should NOT scroll
-  // or trigger long-press: the Pencil, a resting palm, and any touch made
-  // while you are writing.
-  let lastPenAt = 0;
-  const penBusy = () => pads.some(p => p.current) || Date.now() - lastPenAt < 800;
-  const isPalm = t => (t.radiusX || 0) > 22 || (t.radiusY || 0) > 22;
-
-  sheet.addEventListener('touchstart', e => {
+  // Touch handling — same setup that fixed missed strokes on the Pencil test
+  // page: writing boxes have `touch-action: none`, and every touch on a box is
+  // preventDefault'ed (non-passive listeners). That tells iPadOS the page
+  // handles the Pencil itself, so Scribble (handwriting-to-text) can't grab
+  // and cancel strokes, and a resting palm can't scroll or long-press.
+  // Fingers scroll by dragging outside the boxes: margins, gaps between rows,
+  // the ⌫ column, or the top bar.
+  const guardTouch = e => {
     if (e.target.closest('button')) return;      // keep row clear buttons tappable
-    if (!penOnlyEl.checked) { e.preventDefault(); return; }  // fingers draw: no scrolling
-    const ts = [...e.changedTouches];
-    if (ts.some(t => t.touchType === 'stylus') || ts.some(isPalm) || penBusy()) e.preventDefault();
-  }, { passive: false });
-  sheet.addEventListener('touchmove', e => {
-    if (!penOnlyEl.checked) { e.preventDefault(); return; }
-    if ([...e.touches].some(t => t.touchType === 'stylus') || penBusy()) e.preventDefault();
-  }, { passive: false });
+    const onBox = e.target.closest('.cell');
+    const stylus = [...e.changedTouches, ...e.touches].some(t => t.touchType === 'stylus');
+    if (onBox || stylus) e.preventDefault();
+  };
+  sheet.addEventListener('touchstart', guardTouch, { passive: false });
+  sheet.addEventListener('touchmove', guardTouch, { passive: false });
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('selectstart', e => { if (!e.target.closest || !e.target.closest('textarea')) e.preventDefault(); });
-  document.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') lastPenAt = Date.now(); }, true);
-  document.addEventListener('pointerup', e => { if (e.pointerType === 'pen') lastPenAt = Date.now(); }, true);
 
   // Controls
   document.getElementById('editBtn').onclick = () => {
