@@ -65,7 +65,8 @@
   .trace .glyph { font-weight: 400; color: rgba(0,0,0,0.13); }
   .model { background-color: #fffdf6; }
   svg.ink { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
-    pointer-events: none; overflow: visible; fill: #1c1f2b; }
+    pointer-events: none; overflow: visible;
+    fill: none; stroke: #1c1f2b; stroke-linecap: round; stroke-linejoin: round; }
   /* multi-character words: one dashed-cross square per character, with a
      faint divider between characters */
   .cell.multi {
@@ -108,37 +109,11 @@
 
 <script src="words.js"></script>
 <script type="module">
-// perfect-freehand (MIT, by Steve Ruiz — used by tldraw / Excalidraw):
-// stabilises the pen input and turns each stroke into one smooth outline.
-import { getStroke } from 'https://cdn.jsdelivr.net/npm/perfect-freehand@1.2.2/+esm';
-
-// Same settings as the perfect-freehand example app
-// (perfect-freehand-example.vercel.app "Reset Options" defaults).
+// Ball-pen ink: the line is drawn exactly where the Pencil tip goes, at a
+// constant width, and ink already on the page is never redrawn or moved
+// (no smoothing that "corrects" the line while you write).
 // Sizes are in SVG units where one character square = 100 units.
-const STROKE_SIZE = 6.075;      // 35% bigger than the example's size 8 at its writing scale (4.5)
-const STROKE_OPTIONS = {
-  thinning: 0.75,
-  streamline: 0.3,                // lower = ink follows the pen tip more closely (example: 0.5)
-  smoothing: 0.5,
-  easing: t => t,                 // linear
-  // A short taper at both ends stops the round "ink blot" that appears where
-  // the pen lands and lifts (pressure peaks there and the pen moves slowly).
-  start: { taper: 6, cap: true },
-  end: { taper: 9, cap: true },
-};
-
-// Outline points -> SVG path, exactly like the example (getSvgPathFromStroke)
-function svgPathFromStroke(pts) {
-  if (!pts.length) return '';
-  const r = n => Math.round(n * 100) / 100;
-  const d = ['M', r(pts[0][0]), r(pts[0][1]), 'Q'];
-  for (let i = 0; i < pts.length; i++) {
-    const [x0, y0] = pts[i], [x1, y1] = pts[(i + 1) % pts.length];
-    d.push(r(x0), r(y0), r((x0 + x1) / 2), r((y0 + y1) / 2));
-  }
-  d.push('Z');
-  return d.join(' ');
-}
+const STROKE_WIDTH = 5.2;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 (() => {
@@ -283,6 +258,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       svg = document.createElementNS(SVG_NS, 'svg');
       svg.setAttribute('viewBox', `0 0 ${100 * n} 100`);
       svg.setAttribute('class', 'ink');
+      svg.setAttribute('stroke-width', STROKE_WIDTH);
       cell.appendChild(svg);
     }
     function dropSvg() {
@@ -291,21 +267,22 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       svg = livePath = null;
     }
 
-    // [x, y, pressure] input -> SVG path data, using the example's settings.
-    // Mouse/finger (no real pressure) -> simulated pressure from speed,
-    // Apple Pencil -> real pressure. Same rule as the example app.
-    function pathData(stroke, done) {
-      const pts = stroke.pts.map(p => [p.x, p.y, p.p]);
-      return svgPathFromStroke(getStroke(pts, {
-        ...STROKE_OPTIONS,
-        size: STROKE_SIZE,
-        simulatePressure: !stroke.realPressure,
-        // While writing, no end taper: otherwise the newest ink is thinned to
-        // nothing at the pen tip and the line seems to lag behind the Pencil.
-        // The end taper is applied once the Pencil lifts.
-        end: done ? STROKE_OPTIONS.end : { taper: 0, cap: true },
-        last: done,
-      }));
+    // Path data that only ever grows. Each new point adds a curve through
+    // the midpoints of the raw samples (fills the corners between samples);
+    // only the short tail from the last midpoint to the pen tip is replaced
+    // on the next sample. Everything before it stays exactly as drawn.
+    const r = n => Math.round(n * 100) / 100;
+    function startInk(stroke, p) {
+      stroke.d = `M ${r(p.x)} ${r(p.y)}`;
+      stroke.el.setAttribute('d', `${stroke.d} L ${r(p.x)} ${r(p.y)}`);   // dot where the pen lands
+    }
+    function addInk(stroke) {
+      const pts = stroke.pts, n = pts.length, p = pts[n - 1], q = pts[n - 2];
+      if (n >= 3) {
+        const mx = (q.x + p.x) / 2, my = (q.y + p.y) / 2;
+        stroke.d += ` Q ${r(q.x)} ${r(q.y)} ${r(mx)} ${r(my)}`;
+      }
+      stroke.el.setAttribute('d', `${stroke.d} L ${r(p.x)} ${r(p.y)}`);
     }
 
     function newPath() {
@@ -334,10 +311,9 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       ensureSvg();
       rect = cell.getBoundingClientRect();
       try { cell.setPointerCapture(e.pointerId); } catch {}
-      pad.current = { id: e.pointerId, realPressure: e.pointerType === 'pen', pts: [pt(e)] };
       livePath = newPath();
-      // nothing drawn yet: a single point would render as a full round dot
-      // (the "phantom blot") that vanishes once the stroke starts moving
+      pad.current = { id: e.pointerId, pts: [pt(e)], el: livePath };
+      startInk(pad.current, pad.current.pts[0]);
     });
     cell.addEventListener('pointermove', e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
@@ -345,25 +321,14 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
       for (const ev of (evs.length ? evs : [e])) {
         const q = pt(ev), prev = pad.current.pts[pad.current.pts.length - 1];
-        // skip samples while the pen rests in place (they pile ink into a blot)
-        if (prev && Math.hypot(q.x - prev.x, q.y - prev.y) < 0.6) continue;
+        if (prev && Math.hypot(q.x - prev.x, q.y - prev.y) < 0.25) continue;   // pen resting
         pad.current.pts.push(q);
+        addInk(pad.current);
       }
-      // update immediately on every Pencil movement (no waiting for the next frame)
-      if (livePath && pad.current.pts.length >= 3) livePath.setAttribute('d', pathData(pad.current, false));
     });
-    // A tap (pen barely moved) becomes a small round dot, e.g. for 、
-    const isTap = s => s.pts.length < 3 ||
-      Math.hypot(s.pts[s.pts.length - 1].x - s.pts[0].x, s.pts[s.pts.length - 1].y - s.pts[0].y) < 1.5;
-    const dotPath = ({ x, y }) => {
-      const r = STROKE_SIZE * 0.4;
-      return `M ${x - r} ${y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`;
-    };
     const end = e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
-      const stroke = { realPressure: pad.current.realPressure, pts: pad.current.pts };
-      livePath.setAttribute('d', isTap(stroke) ? dotPath(stroke.pts[0]) : pathData(stroke, true));
-      stroke.el = livePath;
+      const stroke = { pts: pad.current.pts, el: livePath };   // left exactly as drawn
       pad.strokes.push(stroke);
       pad.current = null;
       livePath = null;
