@@ -336,7 +336,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       try { cell.setPointerCapture(e.pointerId); } catch {}
       pad.current = { id: e.pointerId, realPressure: e.pointerType === 'pen', pts: [pt(e)] };
       livePath = newPath();
-      livePath.setAttribute('d', pathData(pad.current, false));
+      // nothing drawn yet: a single point would render as a full round dot
+      // (the "phantom blot") that vanishes once the stroke starts moving
     });
     cell.addEventListener('pointermove', e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
@@ -349,12 +350,19 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
         pad.current.pts.push(q);
       }
       // update immediately on every Pencil movement (no waiting for the next frame)
-      if (livePath) livePath.setAttribute('d', pathData(pad.current, false));
+      if (livePath && pad.current.pts.length >= 3) livePath.setAttribute('d', pathData(pad.current, false));
     });
+    // A tap (pen barely moved) becomes a small round dot, e.g. for 、
+    const isTap = s => s.pts.length < 3 ||
+      Math.hypot(s.pts[s.pts.length - 1].x - s.pts[0].x, s.pts[s.pts.length - 1].y - s.pts[0].y) < 1.5;
+    const dotPath = ({ x, y }) => {
+      const r = STROKE_SIZE * 0.4;
+      return `M ${x - r} ${y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`;
+    };
     const end = e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
       const stroke = { realPressure: pad.current.realPressure, pts: pad.current.pts };
-      livePath.setAttribute('d', pathData(stroke, true));
+      livePath.setAttribute('d', isTap(stroke) ? dotPath(stroke.pts[0]) : pathData(stroke, true));
       stroke.el = livePath;
       pad.strokes.push(stroke);
       pad.current = null;
