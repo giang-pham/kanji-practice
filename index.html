@@ -33,11 +33,6 @@
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   label.toggle { display: inline-flex; gap: 6px; align-items: center; }
   .spacer { flex: 1; }
-  .pen-size { gap: 10px; }
-  .pen-size input { width: 130px; accent-color: var(--accent); }
-  .pen-size .dot { display: inline-block; border-radius: 50%; background: #1c1f2b; }
-  .pen-size .dot.small { width: 4px; height: 4px; }
-  .pen-size .dot.big { width: 12px; height: 12px; }
   .pager { display: inline-flex; gap: 6px; align-items: center; }
   .pager select { font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px;
     border: 1px solid #d6cfc2; background: #fff; color: var(--ink); }
@@ -84,11 +79,6 @@
   <button id="undoBtn">↶ Undo</button>
   <button id="clearAllBtn">Clear all</button>
   <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>
-  <label class="toggle pen-size" title="Pen thickness">
-    <span class="dot small"></span>
-    <input type="range" id="penSize" min="0.4" max="2.5" step="0.1" value="1" aria-label="Pen thickness">
-    <span class="dot big"></span>
-  </label>
   <span class="pager">
     <button id="prevPage" aria-label="Previous page">‹</button>
     <select id="pageSelect" aria-label="Page"></select>
@@ -155,15 +145,6 @@ function outlineToPath(pts) {
   // "big" mode shows fewer, larger boxes per visual line (wraps the 12 boxes)
   let scale = Number(store.get('kanji.scale', '0')); // 0 = all 12 on one line, 1 = 6 per line
   penOnlyEl.checked = store.get('kanji.penOnly', '1') === '1';
-  // Pen thickness multiplier (1 = default). Applies to existing writing too.
-  const penSizeEl = document.getElementById('penSize');
-  let penScale = Number(store.get('kanji.penSize', '1')) || 1;
-  penSizeEl.value = penScale;
-  penSizeEl.addEventListener('input', () => {
-    penScale = Number(penSizeEl.value);
-    store.set('kanji.penSize', String(penScale));
-    pads.forEach(p => p.redraw());
-  });
 
   const pads = [];       // all drawing pads
   const history = [];    // stack of pads in stroke order, for global undo
@@ -291,7 +272,7 @@ function outlineToPath(pts) {
     // heavy smoothing + streamlining so curves come out round, not polygonal.
     function strokeOptions(done) {
       return {
-        size: Math.max(1.5, (canvas.width / 42) * penScale),
+        size: Math.max(2.5, canvas.width / 42),
         thinning: 0.12,          // 0 = perfectly even ink, higher = brush-like
         smoothing: 0.7,          // softens the outline
         streamline: 0.5,         // stabilises the hand / sparse Safari samples
@@ -371,7 +352,6 @@ function outlineToPath(pts) {
     pad.clear = () => { pad.strokes = []; pad.current = null; dropCanvas(); };
     pad.undo = () => { pad.strokes.pop(); pad.strokes.length ? redraw() : dropCanvas(); };
     pad.resize = resize;
-    pad.redraw = redraw;
     return pad;
   }
 
