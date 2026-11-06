@@ -59,7 +59,10 @@
   .cell:first-child { margin-left: 0; }
   .glyph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     font-family: "Klee One", "Hiragino Mincho ProN", serif; line-height: 1; pointer-events: none;
-    white-space: nowrap; overflow: hidden; }
+    white-space: nowrap; overflow: hidden;
+    /* size from the box width via container units — no JS measuring */
+    font-size: calc(78cqw / var(--n, 1)); }
+  .model, .trace { container-type: inline-size; }
   .model .glyph { font-weight: 600; color: var(--ink); }
   .trace .glyph { font-weight: 400; color: rgba(0,0,0,0.13); }
   .model { background-color: #fffdf6; }
@@ -100,7 +103,25 @@
 <main id="sheet"></main>
 
 <script src="words.js"></script>
-<script>
+<script type="module">
+// perfect-freehand (MIT, by Steve Ruiz — used by tldraw / Excalidraw):
+// stabilises the pen input and turns each stroke into one smooth outline.
+import { getStroke } from 'https://cdn.jsdelivr.net/npm/perfect-freehand@1.2.2/+esm';
+
+// Outline points -> smooth closed path (quadratic curves through midpoints)
+function outlineToPath(pts) {
+  const path = new Path2D();
+  const n = pts.length;
+  if (n < 3) return path;
+  path.moveTo((pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2);
+  for (let i = 1; i <= n; i++) {
+    const a = pts[i % n], b = pts[(i + 1) % n];
+    path.quadraticCurveTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+  }
+  path.closePath();
+  return path;
+}
+
 (() => {
   const DEFAULT_WORDS = (window.DEFAULT_WORDS || "弟\n兄").trim();
   const WRITE_BOXES = 10;              // empty boxes after the two model boxes
@@ -173,6 +194,7 @@
             const g = document.createElement('div');
             g.className = 'glyph';
             g.textContent = w;
+            g.style.setProperty('--n', Math.max(1, [...w].length));
             cell.appendChild(g);
           }
           if (b.kind !== 'model') rowPads.push(makePad(cell));
@@ -210,15 +232,7 @@
     fitGlyphs();
   }
 
-  function fitGlyphs() {
-    document.querySelectorAll('.cell').forEach(cell => {
-      const g = cell.querySelector('.glyph');
-      if (!g) return;
-      const size = cell.clientWidth;
-      const n = [...g.textContent].length;
-      g.style.fontSize = (size * 0.78 / Math.max(1, n)) + 'px';
-    });
-  }
+  function fitGlyphs() {}   // glyph size is handled in CSS (container units)
 
   // A pad is a writable box. Its <canvas> is only created the first time you
   // write in it, and removed again when cleared — so a page of 330 boxes
@@ -232,7 +246,8 @@
       if (canvas) return;
       canvas = document.createElement('canvas');
       cell.appendChild(canvas);
-      ctx = canvas.getContext('2d');
+      // desynchronized = lower-latency canvas updates where supported
+      ctx = canvas.getContext('2d', { desynchronized: true });
       sizeCanvas();
     }
     function dropCanvas() {
@@ -253,35 +268,32 @@
       redraw();
     }
 
-    // Ball-pen style: constant width, each stroke drawn as ONE continuous
-    // smoothed path, so there are no joins or gaps between segments.
-    function lineWidth() {
-      return Math.max(2, canvas.width / 55);
+    // Ball-pen look: nearly constant width (tiny pressure response),
+    // heavy smoothing + streamlining so curves come out round, not polygonal.
+    function strokeOptions(done) {
+      return {
+        size: Math.max(2.5, canvas.width / 42),
+        thinning: 0.12,          // 0 = perfectly even ink, higher = brush-like
+        smoothing: 0.7,          // softens the outline
+        streamline: 0.5,         // stabilises the hand / sparse Safari samples
+        simulatePressure: false,
+        start: { cap: true },
+        end: { cap: true },
+        last: done,
+      };
     }
 
-    function drawStroke(pts) {
-      const s = pts.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height }));
-      ctx.strokeStyle = '#1c1f2b';
+    function drawStroke(pts, done = true) {
+      const input = pts.map(p => [p.x * canvas.width, p.y * canvas.height, p.p ?? 0.5]);
+      const opts = strokeOptions(done);
       ctx.fillStyle = '#1c1f2b';
-      ctx.lineWidth = lineWidth();
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      if (s.length === 1) {
+      if (input.length === 1) {                 // a tap: draw a round dot
         ctx.beginPath();
-        ctx.arc(s[0].x, s[0].y, lineWidth() / 2, 0, Math.PI * 2);
+        ctx.arc(input[0][0], input[0][1], opts.size / 2, 0, Math.PI * 2);
         ctx.fill();
         return;
       }
-      ctx.beginPath();
-      ctx.moveTo(s[0].x, s[0].y);
-      // quadratic curves through the midpoints of consecutive points
-      for (let i = 1; i < s.length - 1; i++) {
-        const mx = (s[i].x + s[i + 1].x) / 2, my = (s[i].y + s[i + 1].y) / 2;
-        ctx.quadraticCurveTo(s[i].x, s[i].y, mx, my);
-      }
-      const last = s[s.length - 1];
-      ctx.lineTo(last.x, last.y);
-      ctx.stroke();
+      ctx.fill(outlineToPath(getStroke(input, opts)));
     }
 
     function redraw() {
@@ -289,24 +301,20 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       // strokes are stored in 0..1 coordinates so they survive resizes
       for (const s of pad.strokes) drawStroke(s);
-      if (pad.current) drawStroke(pad.current.pts);
+      if (pad.current) drawStroke(pad.current.pts, false);
     }
 
-    // light low-pass filter on input to remove hand jitter
-    function smoothPush(arr, p) {
+    // keep raw samples (perfect-freehand does the smoothing); drop exact repeats
+    function addPoint(arr, p) {
       const prev = arr[arr.length - 1];
-      if (!prev) { arr.push(p); return; }
-      const k = 0.55; // 0 = frozen, 1 = raw input
-      const q = { x: prev.x + (p.x - prev.x) * k, y: prev.y + (p.y - prev.y) * k };
-      // skip points that barely moved (avoids tiny kinks)
-      const dx = (q.x - prev.x) * canvas.width, dy = (q.y - prev.y) * canvas.height;
-      if (dx * dx + dy * dy < 0.5) return;
-      arr.push(q);
+      if (prev && prev.x === p.x && prev.y === p.y) return;
+      arr.push(p);
     }
 
     // rect is measured once per stroke, not on every move event
     function pt(e) {
-      return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
+      const p = e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5;
+      return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, p };
     }
 
     function allowed(e) {
@@ -327,12 +335,12 @@
       if (!pad.current || pad.current.id !== e.pointerId) return;
       e.preventDefault();
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      for (const ev of (evs.length ? evs : [e])) smoothPush(pad.current.pts, pt(ev));
+      for (const ev of (evs.length ? evs : [e])) addPoint(pad.current.pts, pt(ev));
       if (!raf) raf = requestAnimationFrame(() => { raf = 0; redraw(); });
     });
     const end = e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
-      pad.current.pts.push(pt(e));          // land exactly where the pen lifted
+      addPoint(pad.current.pts, { ...pt(e), p: pad.current.pts[pad.current.pts.length - 1].p });
       pad.strokes.push(pad.current.pts);
       pad.current = null;
       history.push(pad);
