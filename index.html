@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Kanji Practice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #faf8f3;
+    --paper: #ffffff;
+    --ink: #1b1b1b;
+    --guide: #e7b3b3;
+    --border: #c9a3a3;
+    --muted: #7a7a7a;
+    --accent: #b23a3a;
+    --cols: 12;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg);
+    padding: 10px 16px; border-bottom: 1px solid #e6e0d4;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  header h1 { font-size: 18px; margin: 0 12px 0 0; font-weight: 600; }
+  button, label.toggle { font: inherit; font-size: 15px; padding: 8px 14px; border-radius: 10px;
+    border: 1px solid #d6cfc2; background: #fff; color: var(--ink); cursor: pointer; }
+  button:active { background: #f0ebe2; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  label.toggle { display: inline-flex; gap: 6px; align-items: center; }
+  .spacer { flex: 1; }
+  #editor { display: none; padding: 12px 16px; border-bottom: 1px solid #e6e0d4; background: #fff; }
+  #editor.open { display: block; }
+  #editor textarea { width: 100%; min-height: 120px; font-size: 22px; padding: 10px;
+    font-family: "Klee One", serif; border: 1px solid #d6cfc2; border-radius: 10px;
+    -webkit-user-select: text; user-select: text; }
+  #editor p { margin: 6px 0 10px; color: var(--muted); font-size: 14px; }
+  main { padding: 16px; }
+  .row { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)) 44px;
+    gap: 0; align-items: stretch; margin-bottom: 22px; }
+  .cell { position: relative; aspect-ratio: 1 / 1; background: var(--paper);
+    border: 1px solid var(--border); margin-left: -1px;
+    background-image:
+      linear-gradient(to right, transparent calc(50% - 0.5px), var(--guide) calc(50% - 0.5px), var(--guide) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+      linear-gradient(to bottom, transparent calc(50% - 0.5px), var(--guide) calc(50% - 0.5px), var(--guide) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+    background-size: 100% 100%; }
+  .cell:first-child { margin-left: 0; }
+  /* dash the guide lines by masking with a repeating pattern */
+  .cell::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(to right, var(--paper) 0 4px, transparent 4px 8px) center / 100% 1px no-repeat,
+      repeating-linear-gradient(to bottom, var(--paper) 0 4px, transparent 4px 8px) center / 1px 100% no-repeat; }
+  .glyph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-family: "Klee One", "Hiragino Mincho ProN", serif; line-height: 1; pointer-events: none; }
+  .model .glyph { font-weight: 600; color: var(--ink); }
+  .trace .glyph { font-weight: 400; color: rgba(0,0,0,0.13); }
+  .model { background-color: #fffdf6; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  .row-actions { display: flex; align-items: center; justify-content: center; }
+  .row-actions button { padding: 6px; width: 36px; height: 36px; border-radius: 50%; font-size: 16px; line-height: 1; }
+  .empty { color: var(--muted); text-align: center; margin-top: 60px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>漢字 Practice</h1>
+  <button id="editBtn">✏️ Edit words</button>
+  <button id="undoBtn">↶ Undo</button>
+  <button id="clearAllBtn">Clear all</button>
+  <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>
+  <span class="spacer"></span>
+  <button id="sizeDown">Small boxes</button>
+  <button id="sizeUp">Big boxes</button>
+</header>
+
+<section id="editor">
+  <p>One kanji (or word) per line. Each line becomes a practice row.</p>
+  <textarea id="words" spellcheck="false"></textarea>
+  <div style="margin-top:10px; display:flex; gap:8px;">
+    <button class="primary" id="applyBtn">Apply</button>
+    <button id="cancelBtn">Cancel</button>
+  </div>
+</section>
+
+<main id="sheet"></main>
+
+<script>
+(() => {
+  const DEFAULT_WORDS = "弟\n兄";
+  const WRITE_BOXES = 10;              // empty boxes after the two model boxes
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+  };
+
+  const sheet = document.getElementById('sheet');
+  const wordsEl = document.getElementById('words');
+  const editor = document.getElementById('editor');
+  const penOnlyEl = document.getElementById('penOnly');
+
+  let words = store.get('kanji.words', DEFAULT_WORDS);
+  // "big" mode shows fewer, larger boxes per visual line (wraps the 12 boxes)
+  let scale = Number(store.get('kanji.scale', '0')); // 0 = all 12 on one line, 1 = 6 per line
+  penOnlyEl.checked = store.get('kanji.penOnly', '1') === '1';
+
+  const pads = [];       // all drawing pads
+  const history = [];    // stack of pads in stroke order, for global undo
+
+  function parseWords(text) {
+    return text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  }
+
+  function render() {
+    pads.length = 0; history.length = 0;
+    sheet.innerHTML = '';
+    const list = parseWords(words);
+    if (!list.length) {
+      sheet.innerHTML = '<p class="empty">No words yet — tap “Edit words”.</p>';
+      return;
+    }
+    const cols = scale ? 6 : 12;
+    document.documentElement.style.setProperty('--cols', cols);
+
+    for (const w of list) {
+      // Split the 12 boxes into chunks of `cols` per visual row
+      const boxes = [{ kind: 'model' }, { kind: 'trace' }];
+      for (let i = 0; i < WRITE_BOXES; i++) boxes.push({ kind: 'write' });
+      const rowPads = [];
+      for (let start = 0; start < boxes.length; start += cols) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        for (const b of boxes.slice(start, start + cols)) {
+          const cell = document.createElement('div');
+          cell.className = 'cell ' + b.kind;
+          if (b.kind !== 'write') {
+            const g = document.createElement('div');
+            g.className = 'glyph';
+            g.textContent = w;
+            cell.appendChild(g);
+          }
+          if (b.kind !== 'model') rowPads.push(makePad(cell));
+          row.appendChild(cell);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'row-actions';
+        if (start === 0) {
+          const btn = document.createElement('button');
+          btn.textContent = '⌫';
+          btn.title = 'Clear this row';
+          btn.onclick = () => rowPads.forEach(p => p.clear());
+          actions.appendChild(btn);
+        }
+        row.appendChild(actions);
+        sheet.appendChild(row);
+      }
+    }
+    fitGlyphs();
+  }
+
+  function fitGlyphs() {
+    document.querySelectorAll('.cell').forEach(cell => {
+      const g = cell.querySelector('.glyph');
+      if (!g) return;
+      const size = cell.clientWidth;
+      const n = [...g.textContent].length;
+      g.style.fontSize = (size * 0.78 / Math.max(1, n)) + 'px';
+    });
+  }
+
+  function makePad(cell) {
+    const canvas = document.createElement('canvas');
+    cell.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    const pad = { canvas, strokes: [], current: null };
+    pads.push(pad);
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const r = canvas.getBoundingClientRect();
+      canvas.width = Math.round(r.width * dpr);
+      canvas.height = Math.round(r.height * dpr);
+      redraw();
+    }
+
+    function lineWidth(p) {
+      const base = canvas.width / 22;                 // relative to box size
+      const pr = p.pressure > 0 ? p.pressure : 0.5;
+      return base * (0.45 + pr * 0.9);
+    }
+
+    function drawSegment(pts, i) {
+      // smooth with quadratic curves through midpoints
+      const a = pts[i - 2] || pts[i - 1], b = pts[i - 1], c = pts[i];
+      const m1 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const m2 = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2 };
+      ctx.lineWidth = lineWidth(c);
+      ctx.beginPath();
+      ctx.moveTo(m1.x, m1.y);
+      ctx.quadraticCurveTo(b.x, b.y, m2.x, m2.y);
+      ctx.stroke();
+    }
+
+    function drawStroke(pts) {
+      ctx.strokeStyle = '#111';
+      ctx.fillStyle = '#111';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (pts.length === 1) {
+        ctx.beginPath();
+        ctx.arc(pts[0].x, pts[0].y, lineWidth(pts[0]) / 2, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+      }
+      for (let i = 1; i < pts.length; i++) drawSegment(pts, i);
+      // finish the tail to the last point
+      const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+      ctx.lineWidth = lineWidth(last);
+      ctx.beginPath();
+      ctx.moveTo((prev.x + last.x) / 2, (prev.y + last.y) / 2);
+      ctx.lineTo(last.x, last.y);
+      ctx.stroke();
+    }
+
+    function redraw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // strokes are stored in 0..1 coordinates so they survive resizes
+      for (const s of pad.strokes) {
+        drawStroke(s.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height, pressure: p.pressure })));
+      }
+    }
+
+    function pt(e) {
+      const r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height,
+               pressure: e.pointerType === 'mouse' ? 0.5 : e.pressure };
+    }
+
+    function allowed(e) {
+      return !(penOnlyEl.checked && e.pointerType === 'touch');
+    }
+
+    canvas.addEventListener('pointerdown', e => {
+      if (!allowed(e)) return;
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      pad.current = { id: e.pointerId, pts: [pt(e)] };
+      ctx.strokeStyle = '#111'; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (!pad.current || pad.current.id !== e.pointerId) return;
+      e.preventDefault();
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      for (const ev of (evs.length ? evs : [e])) {
+        pad.current.pts.push(pt(ev));
+        const pts = pad.current.pts.map(p => ({ x: p.x * canvas.width, y: p.y * canvas.height, pressure: p.pressure }));
+        if (pts.length >= 2) drawSegment(pts, pts.length - 1);
+      }
+    });
+    const end = e => {
+      if (!pad.current || pad.current.id !== e.pointerId) return;
+      pad.strokes.push(pad.current.pts);
+      pad.current = null;
+      history.push(pad);
+      redraw();
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+
+    pad.clear = () => { pad.strokes = []; redraw(); };
+    pad.undo = () => { pad.strokes.pop(); redraw(); };
+    pad.resize = resize;
+    requestAnimationFrame(resize);
+    return pad;
+  }
+
+  // Finger scrolling while in "Pencil only" mode (canvases block native touch scrolling)
+  let touchScroll = null;
+  document.addEventListener('touchstart', e => {
+    if (!penOnlyEl.checked || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (t.touchType === 'stylus') return;
+    if (e.target.tagName === 'CANVAS') touchScroll = { y: t.clientY };
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!touchScroll) return;
+    const t = e.touches[0];
+    if (t.touchType === 'stylus') return;
+    window.scrollBy(0, touchScroll.y - t.clientY);
+    touchScroll.y = t.clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', () => { touchScroll = null; });
+
+  // Controls
+  document.getElementById('editBtn').onclick = () => {
+    wordsEl.value = words;
+    editor.classList.toggle('open');
+    if (editor.classList.contains('open')) wordsEl.focus();
+  };
+  document.getElementById('cancelBtn').onclick = () => editor.classList.remove('open');
+  document.getElementById('applyBtn').onclick = () => {
+    words = wordsEl.value;
+    store.set('kanji.words', words);
+    editor.classList.remove('open');
+    render();
+  };
+  document.getElementById('undoBtn').onclick = () => {
+    const p = history.pop();
+    if (p) p.undo();
+  };
+  document.getElementById('clearAllBtn').onclick = () => {
+    if (confirm('Clear all writing?')) { pads.forEach(p => p.clear()); history.length = 0; }
+  };
+  penOnlyEl.onchange = () => store.set('kanji.penOnly', penOnlyEl.checked ? '1' : '0');
+  document.getElementById('sizeUp').onclick = () => { if (!scale) { scale = 1; store.set('kanji.scale', '1'); render(); } };
+  document.getElementById('sizeDown').onclick = () => { if (scale) { scale = 0; store.set('kanji.scale', '0'); render(); } };
+
+  let rt;
+  window.addEventListener('resize', () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => { pads.forEach(p => p.resize()); fitGlyphs(); }, 120);
+  });
+  document.fonts && document.fonts.ready.then(fitGlyphs);
+
+  render();
+})();
+</script>
+</body>
+</html>
