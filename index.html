@@ -33,9 +33,7 @@
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   label.toggle { display: inline-flex; gap: 6px; align-items: center; }
   .spacer { flex: 1; }
-  #dbg { position: fixed; right: 8px; bottom: 8px; z-index: 50; margin: 0; padding: 8px 10px;
-    background: rgba(0,0,0,.78); color: #9f9; font: 11px/1.35 ui-monospace, monospace;
-    border-radius: 8px; pointer-events: none; max-width: 60vw; white-space: pre; }  .pager { display: inline-flex; gap: 6px; align-items: center; }
+  .pager { display: inline-flex; gap: 6px; align-items: center; }
   .pager select { font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px;
     border: 1px solid #d6cfc2; background: #fff; color: var(--ink); }
   .pager button:disabled { opacity: 0.35; }
@@ -95,7 +93,8 @@
   <button id="editBtn">✏️ Edit words</button>
   <button id="undoBtn">↶ Undo</button>
   <button id="clearAllBtn">Clear all</button>
-  <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>  <span class="pager">
+  <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>
+  <span class="pager">
     <button id="prevPage" aria-label="Previous page">‹</button>
     <select id="pageSelect" aria-label="Page"></select>
     <button id="nextPage" aria-label="Next page">›</button>
@@ -180,24 +179,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
   // "big" mode shows fewer, larger boxes per visual line (wraps the 12 boxes)
   let scale = Number(store.get('kanji.scale', '0')); // 0 = all 12 on one line, 1 = 6 per line
   penOnlyEl.checked = store.get('kanji.penOnly', '1') === '1';
-  const pads = [];       // all drawing pads
-  const padByCell = new WeakMap();
-  // iPad (iPadOS reports itself as a Mac, so also check for touch support)
-  const IS_IPAD = /iPad|iPhone/.test(navigator.userAgent) ||
-    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1) ||
-    /[?&]ipad=1/.test(location.search);           // force the iPad path (testing)
 
-  // On-screen event log for troubleshooting on the iPad: open with ?debug=1
-  const DEBUG = /[?&]debug=1/.test(location.search);
-  const dbgBox = DEBUG ? Object.assign(document.createElement('pre'), { id: 'dbg' }) : null;
-  if (dbgBox) document.body.appendChild(dbgBox);
-  const dbgLines = [];
-  function dbg(...a) {
-    if (!DEBUG) return;
-    dbgLines.push(new Date().toISOString().slice(17, 23) + ' ' + a.join(' '));
-    if (dbgLines.length > 14) dbgLines.shift();
-    dbgBox.textContent = dbgLines.join('\n');
-  }
+  const pads = [];       // all drawing pads
   const history = [];    // stack of pads in stroke order, for global undo
 
   function parseWords(text) {
@@ -342,24 +325,37 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       return p;
     }
 
-    // --- stroke API (fed by pointer events OR touch events) -------------
-    // x/y are client coordinates; rect is measured once per stroke.
-    function toLocal(x, y, p) {
-      return { x: (x - rect.left) / rect.height * 100, y: (y - rect.top) / rect.height * 100, p };
+    // rect is measured once per stroke, not on every move event
+    function pt(e) {
+      const real = e.pointerType === 'pen' && e.pressure > 0;
+      return {
+        x: (e.clientX - rect.left) / rect.height * 100,
+        y: (e.clientY - rect.top) / rect.height * 100,
+        p: real ? e.pressure : 0.5,
+      };
     }
-    pad.begin = (id, x, y, p, realPressure) => {
-      if (pad.current) pad.finish(pad.current.id);    // never two strokes in one box
+
+    function allowed(e) {
+      return !(penOnlyEl.checked && e.pointerType === 'touch');
+    }
+
+    cell.addEventListener('pointerdown', e => {
+      if (!allowed(e)) return;
+      e.preventDefault();
       ensureSvg();
       rect = cell.getBoundingClientRect();
-      pad.current = { id, realPressure, pts: [toLocal(x, y, p)] };
+      try { cell.setPointerCapture(e.pointerId); } catch {}
+      pad.current = { id: e.pointerId, realPressure: e.pointerType === 'pen', pts: [pt(e)] };
       livePath = newPath();
       livePath.setAttribute('d', pathData(pad.current, false));
-    };
+    });
     let raf = 0;
-    pad.move = (id, samples) => {
-      if (!pad.current || pad.current.id !== id) return;
-      for (const [x, y, p] of samples) {
-        const q = toLocal(x, y, p), prev = pad.current.pts[pad.current.pts.length - 1];
+    cell.addEventListener('pointermove', e => {
+      if (!pad.current || pad.current.id !== e.pointerId) return;
+      e.preventDefault();
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      for (const ev of (evs.length ? evs : [e])) {
+        const q = pt(ev), prev = pad.current.pts[pad.current.pts.length - 1];
         // skip samples while the pen rests in place (they pile ink into a blot)
         if (prev && Math.hypot(q.x - prev.x, q.y - prev.y) < 0.6) continue;
         pad.current.pts.push(q);
@@ -368,9 +364,9 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
         raf = 0;
         if (pad.current && livePath) livePath.setAttribute('d', pathData(pad.current, false));
       });
-    };
-    pad.finish = id => {
-      if (!pad.current || pad.current.id !== id) return;
+    });
+    const end = e => {
+      if (!pad.current || pad.current.id !== e.pointerId) return;
       const stroke = { realPressure: pad.current.realPressure, pts: pad.current.pts };
       livePath.setAttribute('d', pathData(stroke, true));
       stroke.el = livePath;
@@ -379,29 +375,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       livePath = null;
       history.push(pad);
     };
-
-    // --- pointer events: mouse everywhere; pen/touch only off-iPad --------
-    // (on iPad, touch events below handle the Pencil — they stay reliable
-    // while a palm is resting on the screen)
-    const usePointer = e => e.pointerType === 'mouse' || (!IS_IPAD && !(penOnlyEl.checked && e.pointerType === 'touch'));
-    const pressureOf = e => (e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5);
-    cell.addEventListener('pointerdown', e => {
-      dbg('pointerdown', e.pointerType, e.pointerId);
-      if (!usePointer(e)) return;
-      e.preventDefault();
-      try { cell.setPointerCapture(e.pointerId); } catch {}
-      pad.begin('p' + e.pointerId, e.clientX, e.clientY, pressureOf(e), e.pointerType === 'pen');
-    });
-    cell.addEventListener('pointermove', e => {
-      if (!pad.current || pad.current.id !== 'p' + e.pointerId) return;
-      e.preventDefault();
-      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
-      pad.move('p' + e.pointerId, (evs.length ? evs : [e]).map(ev => [ev.clientX, ev.clientY, pressureOf(ev)]));
-    });
-    const end = e => { if (e.type === 'pointercancel') dbg('pointercancel', e.pointerType); pad.finish('p' + e.pointerId); };
     cell.addEventListener('pointerup', end);
     cell.addEventListener('pointercancel', end);
-    padByCell.set(cell, pad);
 
     pad.clear = () => { pad.strokes = []; pad.current = null; dropSvg(); };
     pad.undo = () => {
@@ -409,7 +384,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       if (s && s.el) s.el.remove();
       if (!pad.strokes.length) dropSvg();
     };
-    pad.resize = () => {};        // SVG scales by itself    return pad;
+    pad.resize = () => {};        // SVG scales by itself
+    return pad;
   }
 
   // Palm rejection, done the way the perfect-freehand example does it:
@@ -418,51 +394,12 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
   // interrupt the Pencil. In "Pencil only" mode, finger/palm pointers are
   // simply ignored. Scrolling happens on the strip at the left edge
   // (and the header), where your writing hand doesn't rest.
-  //
-  // On iPad the Pencil is driven by TOUCH events, not pointer events: each
-  // contact carries touchType ('stylus' = Pencil, 'direct' = finger/palm) and
-  // its own identifier, so a resting palm can never take over or cancel the
-  // Pencil's stroke. Palm/finger contacts are simply ignored.
-  const touchStrokes = new Map();               // touch identifier -> pad
-  const penForce = t => (t.force > 0 ? Math.min(1, t.force) : 0.5);
-  function padAt(t) {
-    const el = (t.target && t.target.closest && t.target.closest('.cell')) ||
-      (document.elementFromPoint(t.clientX, t.clientY) || { closest: () => null }).closest('.cell');
-    return el ? padByCell.get(el) : null;
-  }
-  sheet.addEventListener('touchstart', e => {
+  const blockTouch = e => {
     if (e.target.closest('button')) return;      // keep row clear buttons tappable
     e.preventDefault();
-    if (!IS_IPAD) return;
-    for (const t of e.changedTouches) {
-      const pen = t.touchType === 'stylus';
-      dbg('touchstart', t.touchType, 'id' + t.identifier, 'r' + Math.round(t.radiusX || 0), 'total' + e.touches.length);
-      if (!pen && penOnlyEl.checked) continue;   // palm / finger: ignore
-      const pad = padAt(t);
-      if (!pad) continue;
-      pad.begin('t' + t.identifier, t.clientX, t.clientY, pen ? penForce(t) : 0.5, pen);
-      touchStrokes.set(t.identifier, pad);
-    }
-  }, { passive: false });
-  sheet.addEventListener('touchmove', e => {
-    if (e.target.closest('button')) return;
-    e.preventDefault();
-    for (const t of e.changedTouches) {
-      const pad = touchStrokes.get(t.identifier);
-      if (pad) pad.move('t' + t.identifier, [[t.clientX, t.clientY, t.touchType === 'stylus' ? penForce(t) : 0.5]]);
-    }
-  }, { passive: false });
-  const touchEnd = e => {
-    for (const t of e.changedTouches) {
-      const pad = touchStrokes.get(t.identifier);
-      if (e.type === 'touchcancel' || pad) dbg(e.type, t.touchType, 'id' + t.identifier);
-      if (!pad) continue;
-      pad.finish('t' + t.identifier);
-      touchStrokes.delete(t.identifier);
-    }
   };
-  sheet.addEventListener('touchend', touchEnd);
-  sheet.addEventListener('touchcancel', touchEnd);
+  sheet.addEventListener('touchstart', blockTouch, { passive: false });
+  sheet.addEventListener('touchmove', blockTouch, { passive: false });
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('selectstart', e => { if (!e.target.closest || !e.target.closest('textarea')) e.preventDefault(); });
   document.addEventListener('gesturestart', e => e.preventDefault());   // Safari pinch-zoom
