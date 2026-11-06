@@ -118,7 +118,7 @@ import { getStroke } from 'https://cdn.jsdelivr.net/npm/perfect-freehand@1.2.2/+
 const STROKE_SIZE = 6.075;      // 35% bigger than the example's size 8 at its writing scale (4.5)
 const STROKE_OPTIONS = {
   thinning: 0.75,
-  streamline: 0.5,
+  streamline: 0.3,                // lower = ink follows the pen tip more closely (example: 0.5)
   smoothing: 0.5,
   easing: t => t,                 // linear
   // A short taper at both ends stops the round "ink blot" that appears where
