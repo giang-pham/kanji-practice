@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Kanji Practice</title>
+<title>💕 Kanji Bum Bum 💕</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #faf8f3;
-    --paper: #ffffff;
+    --paper: rgba(255, 255, 255, 0.86);   /* lets the stickers peek through a little */
     --ink: #1b1b1b;
     --guide: #e7b3b3;
     --border: #c9a3a3;
@@ -23,6 +23,10 @@
   html, body { margin: 0; background: var(--bg); color: var(--ink);
     font-family: -apple-system, system-ui, sans-serif;
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  body { background: transparent; }   /* page colour lives on <html>, so stickers show */
+  /* sticker wallpaper: a fixed layer behind everything (doesn't scroll, never touched) */
+  #stickers { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+  #stickers img { position: absolute; width: 120px; height: auto; opacity: 0.55; }
   header { position: sticky; top: 0; z-index: 5; background: var(--bg);
     padding: 10px 16px; border-bottom: 1px solid #e6e0d4;
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -79,7 +83,7 @@
 </head>
 <body>
 <header>
-  <h1>漢字 Practice</h1>
+  <h1>💕 Kanji Bum Bum 💕</h1>
   <button id="editBtn">✏️ Edit words</button>
   <button id="undoBtn">↶ Undo</button>
   <button id="clearAllBtn">Clear all</button>
@@ -105,9 +109,38 @@
   </div>
 </section>
 
+<div id="stickers" aria-hidden="true"></div>
 <main id="sheet"></main>
 
 <script src="words.js"></script>
+<script>
+// Scatter the stickers over the screen: a loose grid with a little random
+// offset and tilt. Seeded, so the layout stays the same on every visit.
+(() => {
+  const layer = document.getElementById('stickers'), COUNT = 28, CELL = 170;
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  function place() {
+    layer.textContent = '';
+    const cols = Math.ceil(innerWidth / CELL) + 1, rows = Math.ceil(innerHeight / CELL) + 1;
+    seed = 7;
+    let k = 0;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const img = new Image();
+      img.src = `stickers/${String(k % COUNT + 1).padStart(2, '0')}.webp`;
+      img.decoding = 'async';
+      img.style.left = (c * CELL + (r % 2) * CELL / 2 - 40 + rnd() * 30) + 'px';
+      img.style.top = (r * CELL - 30 + rnd() * 30) + 'px';
+      img.style.transform = `rotate(${(rnd() - 0.5) * 24}deg)`;
+      layer.appendChild(img);
+      k += 5;   // step through stickers so neighbours differ
+      if (k % COUNT === 0) k++;
+    }
+  }
+  place();
+  let t; addEventListener('resize', () => { clearTimeout(t); t = setTimeout(place, 200); });
+})();
+</script>
 <script type="module">
 // Ball-pen ink: the line is drawn exactly where the Pencil tip goes, at a
 // constant width, and ink already on the page is never redrawn or moved
