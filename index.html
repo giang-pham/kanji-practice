@@ -66,7 +66,13 @@
   .model .glyph { font-weight: 600; color: var(--ink); }
   .trace .glyph { font-weight: 400; color: rgba(0,0,0,0.13); }
   .model { background-color: #fffdf6; }
-  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+  svg.ink { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+    pointer-events: none; overflow: visible; fill: #1c1f2b; }
+  /* multi-character words: one dashed-cross square per character, with a
+     faint divider between characters */
+  .cell.multi {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpath d='M50 0V100M0 50H100' stroke='%23e7b3b3' stroke-width='1' stroke-dasharray='4 4' vector-effect='non-scaling-stroke' fill='none'/%3E%3Cpath d='M100 0V100' stroke='%23d9b8b8' stroke-width='1' vector-effect='non-scaling-stroke' fill='none'/%3E%3C/svg%3E");
+    background-repeat: repeat-x; background-position: left center; }
   .row-actions { display: flex; align-items: center; justify-content: center; }
   .row-actions button { padding: 6px; width: 36px; height: 36px; border-radius: 50%; font-size: 16px; line-height: 1; }
   .empty { color: var(--muted); text-align: center; margin-top: 60px; }
@@ -108,19 +114,32 @@
 // stabilises the pen input and turns each stroke into one smooth outline.
 import { getStroke } from 'https://cdn.jsdelivr.net/npm/perfect-freehand@1.2.2/+esm';
 
-// Outline points -> smooth closed path (quadratic curves through midpoints)
-function outlineToPath(pts) {
-  const path = new Path2D();
-  const n = pts.length;
-  if (n < 3) return path;
-  path.moveTo((pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2);
-  for (let i = 1; i <= n; i++) {
-    const a = pts[i % n], b = pts[(i + 1) % n];
-    path.quadraticCurveTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+// Same settings as the perfect-freehand example app
+// (perfect-freehand-example.vercel.app "Reset Options" defaults).
+// Sizes are in SVG units where one character square = 100 units.
+const STROKE_SIZE = 4.5;        // ≈ the example's size 8 at its writing scale
+const STROKE_OPTIONS = {
+  thinning: 0.75,
+  streamline: 0.5,
+  smoothing: 0.5,
+  easing: t => t,                 // linear
+  start: { taper: 0, cap: true },
+  end: { taper: 0, cap: true },
+};
+
+// Outline points -> SVG path, exactly like the example (getSvgPathFromStroke)
+function svgPathFromStroke(pts) {
+  if (!pts.length) return '';
+  const r = n => Math.round(n * 100) / 100;
+  const d = ['M', r(pts[0][0]), r(pts[0][1]), 'Q'];
+  for (let i = 0; i < pts.length; i++) {
+    const [x0, y0] = pts[i], [x1, y1] = pts[(i + 1) % pts.length];
+    d.push(r(x0), r(y0), r((x0 + x1) / 2), r((y0 + y1) / 2));
   }
-  path.closePath();
-  return path;
+  d.push('Z');
+  return d.join(' ');
 }
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 (() => {
   const DEFAULT_WORDS = (window.DEFAULT_WORDS || "弟\n兄").trim();
@@ -180,25 +199,40 @@ function outlineToPath(pts) {
     document.documentElement.style.setProperty('--cols', cols);
 
     for (const w of list) {
-      // Split the 12 boxes into chunks of `cols` per visual row
+      // A word of n characters gets boxes n squares wide (one square per
+      // character), so each character is written at full size.
+      const n = Math.min(Math.max(1, [...w].length), cols);
+      const perLine = Math.max(1, Math.floor(cols / n));
       const boxes = [{ kind: 'model' }, { kind: 'trace' }];
       for (let i = 0; i < WRITE_BOXES; i++) boxes.push({ kind: 'write' });
       const rowPads = [];
-      for (let start = 0; start < boxes.length; start += cols) {
+      for (let start = 0; start < boxes.length; start += perLine) {
         const row = document.createElement('div');
         row.className = 'row';
-        for (const b of boxes.slice(start, start + cols)) {
+        for (const b of boxes.slice(start, start + perLine)) {
           const cell = document.createElement('div');
-          cell.className = 'cell ' + b.kind;
+          cell.className = 'cell ' + b.kind + (n > 1 ? ' multi' : '');
+          if (n > 1) {
+            cell.style.gridColumn = `span ${n}`;
+            cell.style.aspectRatio = `${n} / 1`;
+            cell.style.backgroundSize = `${100 / n}% 100%`;
+          }
           if (b.kind !== 'write') {
             const g = document.createElement('div');
             g.className = 'glyph';
             g.textContent = w;
-            g.style.setProperty('--n', Math.max(1, [...w].length));
+            g.style.setProperty('--n', n);
             cell.appendChild(g);
           }
-          if (b.kind !== 'model') rowPads.push(makePad(cell));
+          if (b.kind !== 'model') rowPads.push(makePad(cell, n));
           row.appendChild(cell);
+        }
+        // empty filler keeps the clear button in the last column
+        const used = Math.min(perLine, boxes.length - start) * n;
+        if (used < cols) {
+          const fill = document.createElement('div');
+          fill.style.gridColumn = `span ${cols - used}`;
+          row.appendChild(fill);
         }
         const actions = document.createElement('div');
         actions.className = 'row-actions';
@@ -234,87 +268,56 @@ function outlineToPath(pts) {
 
   function fitGlyphs() {}   // glyph size is handled in CSS (container units)
 
-  // A pad is a writable box. Its <canvas> is only created the first time you
-  // write in it, and removed again when cleared — so a page of 330 boxes
-  // holds just a handful of canvases instead of 330 full-resolution ones.
-  function makePad(cell) {
-    let canvas = null, ctx = null, rect = null;
+  // A pad is a writable box. Like the perfect-freehand example, ink is drawn
+  // as SVG <path>s (vector: sharp at any zoom, no bitmap memory). The <svg>
+  // is only created the first time you write in a box, and removed on clear.
+  // Coordinates: one character square = 100 units, so a box for an
+  // n-character word is 100n × 100.
+  function makePad(cell, n = 1) {
+    let svg = null, rect = null, livePath = null;
     const pad = { cell, strokes: [], current: null };
     pads.push(pad);
 
-    function ensureCanvas() {
-      if (canvas) return;
-      canvas = document.createElement('canvas');
-      cell.appendChild(canvas);
-      // desynchronized = lower-latency canvas updates where supported
-      ctx = canvas.getContext('2d', { desynchronized: true });
-      sizeCanvas();
+    function ensureSvg() {
+      if (svg) return;
+      svg = document.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('viewBox', `0 0 ${100 * n} 100`);
+      svg.setAttribute('class', 'ink');
+      cell.appendChild(svg);
     }
-    function dropCanvas() {
-      if (!canvas) return;
-      canvas.width = canvas.height = 0;   // release memory right away on iOS
-      canvas.remove();
-      canvas = ctx = null;
-    }
-    function sizeCanvas() {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const w = cell.clientWidth, h = cell.clientHeight;
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-    }
-    function resize() {
-      if (!canvas) return;
-      sizeCanvas();
-      redraw();
+    function dropSvg() {
+      if (!svg) return;
+      svg.remove();
+      svg = livePath = null;
     }
 
-    // Ball-pen look: nearly constant width (tiny pressure response),
-    // heavy smoothing + streamlining so curves come out round, not polygonal.
-    function strokeOptions(done) {
-      return {
-        size: Math.max(2.5, canvas.width / 42),
-        thinning: 0.12,          // 0 = perfectly even ink, higher = brush-like
-        smoothing: 0.7,          // softens the outline
-        streamline: 0.5,         // stabilises the hand / sparse Safari samples
-        simulatePressure: false,
-        start: { cap: true },
-        end: { cap: true },
+    // [x, y, pressure] input -> SVG path data, using the example's settings.
+    // Mouse/finger (no real pressure) -> simulated pressure from speed,
+    // Apple Pencil -> real pressure. Same rule as the example app.
+    function pathData(stroke, done) {
+      const pts = stroke.pts.map(p => [p.x, p.y, p.p]);
+      return svgPathFromStroke(getStroke(pts, {
+        ...STROKE_OPTIONS,
+        size: STROKE_SIZE,
+        simulatePressure: !stroke.realPressure,
         last: done,
-      };
+      }));
     }
 
-    function drawStroke(pts, done = true) {
-      const input = pts.map(p => [p.x * canvas.width, p.y * canvas.height, p.p ?? 0.5]);
-      const opts = strokeOptions(done);
-      ctx.fillStyle = '#1c1f2b';
-      if (input.length === 1) {                 // a tap: draw a round dot
-        ctx.beginPath();
-        ctx.arc(input[0][0], input[0][1], opts.size / 2, 0, Math.PI * 2);
-        ctx.fill();
-        return;
-      }
-      ctx.fill(outlineToPath(getStroke(input, opts)));
-    }
-
-    function redraw() {
-      if (!canvas) return;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      // strokes are stored in 0..1 coordinates so they survive resizes
-      for (const s of pad.strokes) drawStroke(s);
-      if (pad.current) drawStroke(pad.current.pts, false);
-    }
-
-    // keep raw samples (perfect-freehand does the smoothing); drop exact repeats
-    function addPoint(arr, p) {
-      const prev = arr[arr.length - 1];
-      if (prev && prev.x === p.x && prev.y === p.y) return;
-      arr.push(p);
+    function newPath() {
+      const p = document.createElementNS(SVG_NS, 'path');
+      svg.appendChild(p);
+      return p;
     }
 
     // rect is measured once per stroke, not on every move event
     function pt(e) {
-      const p = e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5;
-      return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, p };
+      const real = e.pointerType === 'pen' && e.pressure > 0;
+      return {
+        x: (e.clientX - rect.left) / rect.height * 100,
+        y: (e.clientY - rect.top) / rect.height * 100,
+        p: real ? e.pressure : 0.5,
+      };
     }
 
     function allowed(e) {
@@ -324,34 +327,44 @@ function outlineToPath(pts) {
     cell.addEventListener('pointerdown', e => {
       if (!allowed(e)) return;
       e.preventDefault();
-      ensureCanvas();
+      ensureSvg();
       rect = cell.getBoundingClientRect();
       try { cell.setPointerCapture(e.pointerId); } catch {}
-      pad.current = { id: e.pointerId, pts: [pt(e)] };
-      redraw();
+      pad.current = { id: e.pointerId, realPressure: e.pointerType === 'pen', pts: [pt(e)] };
+      livePath = newPath();
+      livePath.setAttribute('d', pathData(pad.current, false));
     });
     let raf = 0;
     cell.addEventListener('pointermove', e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
       e.preventDefault();
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      for (const ev of (evs.length ? evs : [e])) addPoint(pad.current.pts, pt(ev));
-      if (!raf) raf = requestAnimationFrame(() => { raf = 0; redraw(); });
+      for (const ev of (evs.length ? evs : [e])) pad.current.pts.push(pt(ev));
+      if (!raf) raf = requestAnimationFrame(() => {
+        raf = 0;
+        if (pad.current && livePath) livePath.setAttribute('d', pathData(pad.current, false));
+      });
     });
     const end = e => {
       if (!pad.current || pad.current.id !== e.pointerId) return;
-      addPoint(pad.current.pts, { ...pt(e), p: pad.current.pts[pad.current.pts.length - 1].p });
-      pad.strokes.push(pad.current.pts);
+      const stroke = { realPressure: pad.current.realPressure, pts: pad.current.pts };
+      livePath.setAttribute('d', pathData(stroke, true));
+      stroke.el = livePath;
+      pad.strokes.push(stroke);
       pad.current = null;
+      livePath = null;
       history.push(pad);
-      redraw();
     };
     cell.addEventListener('pointerup', end);
     cell.addEventListener('pointercancel', end);
 
-    pad.clear = () => { pad.strokes = []; pad.current = null; dropCanvas(); };
-    pad.undo = () => { pad.strokes.pop(); pad.strokes.length ? redraw() : dropCanvas(); };
-    pad.resize = resize;
+    pad.clear = () => { pad.strokes = []; pad.current = null; dropSvg(); };
+    pad.undo = () => {
+      const s = pad.strokes.pop();
+      if (s && s.el) s.el.remove();
+      if (!pad.strokes.length) dropSvg();
+    };
+    pad.resize = () => {};        // SVG scales by itself
     return pad;
   }
 
