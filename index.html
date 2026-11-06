@@ -23,10 +23,10 @@
   html, body { margin: 0; background: var(--bg); color: var(--ink);
     font-family: -apple-system, system-ui, sans-serif;
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  body { background: transparent; }   /* page colour lives on <html>, so stickers show */
-  /* sticker wallpaper: a fixed layer behind everything (doesn't scroll, never touched) */
-  #stickers { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
-  #stickers img { position: absolute; width: 120px; height: auto; opacity: 0.55; }
+  /* sticker wallpaper: one tile image repeated down the whole page, so it
+     scrolls with the words and shows up in full-page screenshots / Markup */
+  html { background: var(--bg) url("stickers/tile.webp") 0 0 / 1020px 1020px repeat; }
+  body { background: transparent; }
   header { position: sticky; top: 0; z-index: 5; background: var(--bg);
     padding: 10px 16px; border-bottom: 1px solid #e6e0d4;
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -44,10 +44,8 @@
     -webkit-user-select: text; user-select: text; }
   #editor p { margin: 6px 0 10px; color: var(--muted); font-size: 14px; }
   main { padding: 16px; }
-  .row { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)) 44px;
-    gap: 0; align-items: stretch; margin-bottom: 22px;
-    /* let the browser skip painting rows that are off-screen */
-    content-visibility: auto; contain-intrinsic-size: auto 100px; }
+  .row { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+    gap: 0; align-items: stretch; margin-bottom: 22px; }
   /* one cheap SVG image for the dashed cross guide (no gradients / pseudo-elements) */
   .cell { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--border); margin-left: -1px;
     background: var(--paper) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpath d='M50 0V100M0 50H100' stroke='%23e7b3b3' stroke-width='1' stroke-dasharray='4 4' vector-effect='non-scaling-stroke' fill='none'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
@@ -70,8 +68,6 @@
   .cell.multi {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpath d='M50 0V100M0 50H100' stroke='%23e7b3b3' stroke-width='1' stroke-dasharray='4 4' vector-effect='non-scaling-stroke' fill='none'/%3E%3Cpath d='M100 0V100' stroke='%23d9b8b8' stroke-width='1' vector-effect='non-scaling-stroke' fill='none'/%3E%3C/svg%3E");
     background-repeat: repeat-x; background-position: left center; }
-  .row-actions { display: flex; align-items: center; justify-content: center; }
-  .row-actions button { padding: 6px; width: 36px; height: 36px; border-radius: 50%; font-size: 16px; line-height: 1; }
   .empty { color: var(--muted); text-align: center; margin-top: 60px; }
 </style>
 </head>
@@ -98,38 +94,9 @@
   </div>
 </section>
 
-<div id="stickers" aria-hidden="true"></div>
 <main id="sheet"></main>
 
 <script src="words.js"></script>
-<script>
-// Scatter the stickers over the screen: a loose grid with a little random
-// offset and tilt. Seeded, so the layout stays the same on every visit.
-(() => {
-  const layer = document.getElementById('stickers'), COUNT = 28, CELL = 170;
-  let seed = 7;
-  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  function place() {
-    layer.textContent = '';
-    const cols = Math.ceil(innerWidth / CELL) + 1, rows = Math.ceil(innerHeight / CELL) + 1;
-    seed = 7;
-    let k = 0;
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const img = new Image();
-      img.src = `stickers/${String(k % COUNT + 1).padStart(2, '0')}.webp`;
-      img.decoding = 'async';
-      img.style.left = (c * CELL + (r % 2) * CELL / 2 - 40 + rnd() * 30) + 'px';
-      img.style.top = (r * CELL - 30 + rnd() * 30) + 'px';
-      img.style.transform = `rotate(${(rnd() - 0.5) * 24}deg)`;
-      layer.appendChild(img);
-      k += 5;   // step through stickers so neighbours differ
-      if (k % COUNT === 0) k++;
-    }
-  }
-  place();
-  let t; addEventListener('resize', () => { clearTimeout(t); t = setTimeout(place, 200); });
-})();
-</script>
 <script type="module">
 // Ball-pen ink: the line is drawn exactly where the Pencil tip goes, at a
 // constant width, and ink already on the page is never redrawn or moved
@@ -186,7 +153,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       const total = Math.max(3, Math.floor(MAX_SQUARES / n));
       const boxes = [{ kind: 'model' }, { kind: 'trace' }];
       for (let i = 2; i < total; i++) boxes.push({ kind: 'write' });
-      const rowPads = [];
       for (let start = 0; start < boxes.length; start += perLine) {
         const row = document.createElement('div');
         row.className = 'row';
@@ -205,26 +171,16 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
             g.style.setProperty('--n', n);
             cell.appendChild(g);
           }
-          if (b.kind !== 'model') rowPads.push(makePad(cell, n));
+          if (b.kind !== 'model') makePad(cell, n);
           row.appendChild(cell);
         }
-        // empty filler keeps the clear button in the last column
+        // empty filler keeps a short last line left-aligned
         const used = Math.min(perLine, boxes.length - start) * n;
         if (used < cols) {
           const fill = document.createElement('div');
           fill.style.gridColumn = `span ${cols - used}`;
           row.appendChild(fill);
         }
-        const actions = document.createElement('div');
-        actions.className = 'row-actions';
-        if (start === 0) {
-          const btn = document.createElement('button');
-          btn.textContent = '⌫';
-          btn.title = 'Clear this row';
-          btn.onclick = () => rowPads.forEach(p => p.clear());
-          actions.appendChild(btn);
-        }
-        row.appendChild(actions);
         sheet.appendChild(row);
       }
     }
@@ -343,7 +299,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
   // handles the Pencil itself, so Scribble (handwriting-to-text) can't grab
   // and cancel strokes, and a resting palm can't scroll or long-press.
   // Fingers scroll by dragging outside the boxes: margins, gaps between rows,
-  // the ⌫ column, or the top bar.
+  // or the top bar.
   const guardTouch = e => {
     if (e.target.closest('button')) return;      // keep row clear buttons tappable
     const onBox = e.target.closest('.cell');
