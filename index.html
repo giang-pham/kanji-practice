@@ -34,8 +34,6 @@
   label.toggle { display: inline-flex; gap: 6px; align-items: center; }
   .spacer { flex: 1; }
   .pen-size { gap: 10px; }
-  select.ink { font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px;
-    border: 1px solid #d6cfc2; background: #fff; color: var(--ink-color, #1d1f24); }
   .pen-size input { width: 130px; accent-color: var(--accent); }
   .pen-size .dot { display: inline-block; border-radius: 50%; background: #1c1f2b; }
   .pen-size .dot.small { width: 4px; height: 4px; }
@@ -91,10 +89,6 @@
     <input type="range" id="penSize" min="0.4" max="2.5" step="0.1" value="1" aria-label="Pen thickness">
     <span class="dot big"></span>
   </label>
-  <select id="inkColor" class="ink" aria-label="Ink colour">
-    <option value="#1d1f24">● Black ink</option>
-    <option value="#1f3a93">● Blue ink</option>
-  </select>
   <span class="pager">
     <button id="prevPage" aria-label="Previous page">‹</button>
     <select id="pageSelect" aria-label="Page"></select>
@@ -168,19 +162,6 @@ function outlineToPath(pts) {
   penSizeEl.addEventListener('input', () => {
     penScale = Number(penSizeEl.value);
     store.set('kanji.penSize', String(penScale));
-    pads.forEach(p => p.redraw());
-  });
-  // Ink colour (ballpoint black / blue)
-  const inkEl = document.getElementById('inkColor');
-  let inkColor = store.get('kanji.ink', '#1d1f24');
-  inkEl.value = inkColor;
-  if (inkEl.value !== inkColor) inkColor = inkEl.value = '#1d1f24';
-  const syncInk = () => inkEl.style.setProperty('--ink-color', inkColor);
-  syncInk();
-  inkEl.addEventListener('change', () => {
-    inkColor = inkEl.value;
-    store.set('kanji.ink', inkColor);
-    syncInk();
     pads.forEach(p => p.redraw());
   });
 
@@ -306,100 +287,32 @@ function outlineToPath(pts) {
       redraw();
     }
 
-    // ---- Ball-pen rendering -------------------------------------------
-    // • width is perfectly even (a ballpoint doesn't flare with pressure)
-    // • pressure changes how DARK the ink is, not how wide
-    // • low streamline so ink stays at the pen tip (no trailing lag)
-    // • sharp turns (口, 日, 力 corners) are kept crisp: the stroke is split
-    //   at corners and each straight-ish part is smoothed on its own
-    function penSize() { return Math.max(1.5, (canvas.width / 42) * penScale); }
-
-    function strokeOptions() {
+    // Ball-pen look: nearly constant width (tiny pressure response),
+    // heavy smoothing + streamlining so curves come out round, not polygonal.
+    function strokeOptions(done) {
       return {
-        size: penSize(),
-        thinning: 0,             // even ink width, like a ballpoint
-        smoothing: 0.6,          // round, clean outline
-        streamline: 0.18,        // light stabilising — ink stays on the tip
+        size: Math.max(1.5, (canvas.width / 42) * penScale),
+        thinning: 0.12,          // 0 = perfectly even ink, higher = brush-like
+        smoothing: 0.7,          // softens the outline
+        streamline: 0.5,         // stabilises the hand / sparse Safari samples
         simulatePressure: false,
         start: { cap: true },
         end: { cap: true },
-        last: true,              // always run the ink right up to the latest point
+        last: done,
       };
     }
 
-    // Indices where the stroke turns sharply (> ~60°). Angles are measured
-    // over a short distance, not between neighbouring samples, so hand
-    // jitter doesn't count as a corner.
-    function findCorners(s) {
-      const d = canvas.width * 0.045;
-      const minTurn = Math.PI / 3;
-      const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-      const cand = [];
-      for (let i = 1; i < s.length - 1; i++) {
-        let a = i - 1; while (a > 0 && dist(s[a], s[i]) < d) a--;
-        let b = i + 1; while (b < s.length - 1 && dist(s[b], s[i]) < d) b++;
-        if (dist(s[a], s[i]) < d * 0.6 || dist(s[b], s[i]) < d * 0.6) continue;
-        const v1 = [s[i][0] - s[a][0], s[i][1] - s[a][1]];
-        const v2 = [s[b][0] - s[i][0], s[b][1] - s[i][1]];
-        const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2));
-        const turn = Math.acos(Math.max(-1, Math.min(1, cos)));
-        if (turn > minTurn) cand.push({ i, turn });
+    function drawStroke(pts, done = true) {
+      const input = pts.map(p => [p.x * canvas.width, p.y * canvas.height, p.p ?? 0.5]);
+      const opts = strokeOptions(done);
+      ctx.fillStyle = '#1c1f2b';
+      if (input.length === 1) {                 // a tap: draw a round dot
+        ctx.beginPath();
+        ctx.arc(input[0][0], input[0][1], opts.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+        return;
       }
-      // keep only the sharpest point of each cluster of candidates
-      const corners = [];
-      for (const c of cand) {
-        const last = corners[corners.length - 1];
-        if (last && dist(s[c.i], s[last.i]) < d) { if (c.turn > last.turn) corners[corners.length - 1] = c; }
-        else corners.push(c);
-      }
-      return corners.map(c => c.i);
-    }
-
-    // Short look-ahead along the current velocity, so the ink appears to
-    // keep up with the Pencil (Safari has no getPredictedEvents).
-    function predictPoint(pts) {
-      const n = pts.length;
-      if (n < 3) return null;
-      const a = pts[n - 3], b = pts[n - 1];
-      const dt = b.t - a.t;
-      if (!(dt > 0) || dt > 80) return null;           // pen paused: no prediction
-      const ahead = 14;                                 // ms to look ahead
-      let dx = (b.x - a.x) / dt * ahead, dy = (b.y - a.y) / dt * ahead;
-      const len = Math.hypot(dx, dy), max = 0.035;      // cap: 3.5% of the box
-      if (len > max) { dx *= max / len; dy *= max / len; }
-      return { x: b.x + dx, y: b.y + dy, p: b.p, t: b.t + ahead };
-    }
-
-    function strokePath(pts, live) {
-      const all = live ? [...pts, predictPoint(pts)].filter(Boolean) : pts;
-      const s = all.map(p => [p.x * canvas.width, p.y * canvas.height, 0.5]);
-      const path = new Path2D();
-      if (s.length === 1) {                             // a tap: round dot
-        path.arc(s[0][0], s[0][1], penSize() / 2, 0, Math.PI * 2);
-        return path;
-      }
-      const opts = strokeOptions();
-      const cuts = [0, ...findCorners(s), s.length - 1];
-      for (let k = 0; k < cuts.length - 1; k++) {
-        const part = s.slice(cuts[k], cuts[k + 1] + 1);
-        path.addPath(outlineToPath(getStroke(part, opts)));
-      }
-      return path;
-    }
-
-    // Ballpoint ink: harder press = darker line (82%–100%)
-    function inkAlpha(pts) {
-      let sum = 0;
-      for (const p of pts) sum += p.p ?? 0.5;
-      const avg = sum / pts.length;
-      return 0.82 + 0.18 * Math.min(1, avg / 0.6);
-    }
-
-    function drawStroke(pts, live = false) {
-      ctx.globalAlpha = inkAlpha(pts);
-      ctx.fillStyle = inkColor;
-      ctx.fill(strokePath(pts, live), 'nonzero');     // nonzero = no dark overlaps at corners
-      ctx.globalAlpha = 1;
+      ctx.fill(outlineToPath(getStroke(input, opts)));
     }
 
     function redraw() {
@@ -407,7 +320,7 @@ function outlineToPath(pts) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       // strokes are stored in 0..1 coordinates so they survive resizes
       for (const s of pad.strokes) drawStroke(s);
-      if (pad.current) drawStroke(pad.current.pts, true);
+      if (pad.current) drawStroke(pad.current.pts, false);
     }
 
     // keep raw samples (perfect-freehand does the smoothing); drop exact repeats
@@ -420,7 +333,7 @@ function outlineToPath(pts) {
     // rect is measured once per stroke, not on every move event
     function pt(e) {
       const p = e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5;
-      return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, p, t: e.timeStamp };
+      return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, p };
     }
 
     function allowed(e) {
