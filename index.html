@@ -37,12 +37,6 @@
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   label.toggle { display: inline-flex; gap: 6px; align-items: center; }
   .spacer { flex: 1; }
-  .pager { display: inline-flex; gap: 6px; align-items: center; }
-  .pager select { font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px;
-    border: 1px solid #d6cfc2; background: #fff; color: var(--ink); }
-  .pager button:disabled { opacity: 0.35; }
-  .page-foot { display: flex; justify-content: center; gap: 12px; align-items: center;
-    margin: 8px 0 40px; color: var(--muted); }
   #editor { display: none; padding: 12px 16px; border-bottom: 1px solid #e6e0d4; background: #fff; }
   #editor.open { display: block; }
   #editor textarea { width: 100%; min-height: 120px; font-size: 22px; padding: 10px;
@@ -88,11 +82,6 @@
   <button id="undoBtn">↶ Undo</button>
   <button id="clearAllBtn">Clear all</button>
   <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>
-  <span class="pager">
-    <button id="prevPage" aria-label="Previous page">‹</button>
-    <select id="pageSelect" aria-label="Page"></select>
-    <button id="nextPage" aria-label="Next page">›</button>
-  </span>
   <span class="spacer"></span>
   <button id="sizeDown">Small boxes</button>
   <button id="sizeUp">Big boxes</button>
@@ -151,8 +140,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 (() => {
   const DEFAULT_WORDS = (window.DEFAULT_WORDS || "弟\n兄").trim();
-  const WRITE_BOXES = 10;              // empty boxes after the two model boxes
-  const PER_PAGE = 30;
+  const MAX_SQUARES = 12;              // squares per word, model + trace boxes included
   const store = {
     get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -165,10 +153,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
   // Saved edits override the default list; v2 key so the new default list shows up
   let words = store.get('kanji.words.v2', DEFAULT_WORDS);
-  let page = Number(store.get('kanji.page', '0')) || 0;
-  const pageSelect = document.getElementById('pageSelect');
-  const prevBtn = document.getElementById('prevPage');
-  const nextBtn = document.getElementById('nextPage');
   // "big" mode shows fewer, larger boxes per visual line (wraps the 12 boxes)
   let scale = Number(store.get('kanji.scale', '0')); // 0 = all 12 on one line, 1 = 6 per line
   penOnlyEl.checked = store.get('kanji.penOnly', '1') === '1';
@@ -184,21 +168,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
     pads.length = 0; history.length = 0;
     sheet.innerHTML = '';
     const all = parseWords(words);
-    const pageCount = Math.max(1, Math.ceil(all.length / PER_PAGE));
-    page = Math.min(Math.max(0, page), pageCount - 1);
-    store.set('kanji.page', String(page));
-    pageSelect.innerHTML = '';
-    for (let i = 0; i < pageCount; i++) {
-      const o = document.createElement('option');
-      o.value = i;
-      o.textContent = `Page ${i + 1} / ${pageCount}`;
-      pageSelect.appendChild(o);
-    }
-    pageSelect.value = page;
-    prevBtn.disabled = page === 0;
-    nextBtn.disabled = page >= pageCount - 1;
-
-    const list = all.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
+    const list = all;   // every word on one long page
     if (!list.length) {
       sheet.innerHTML = '<p class="empty">No words yet — tap “Edit words”.</p>';
       return;
@@ -211,8 +181,11 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
       // character), so each character is written at full size.
       const n = Math.min(Math.max(1, [...w].length), cols);
       const perLine = Math.max(1, Math.floor(cols / n));
+      // at most 12 squares per word: a 3-character word gets 4 boxes
+      // (model, trace, 2 to write); always at least one box to write in
+      const total = Math.max(3, Math.floor(MAX_SQUARES / n));
       const boxes = [{ kind: 'model' }, { kind: 'trace' }];
-      for (let i = 0; i < WRITE_BOXES; i++) boxes.push({ kind: 'write' });
+      for (let i = 2; i < total; i++) boxes.push({ kind: 'write' });
       const rowPads = [];
       for (let start = 0; start < boxes.length; start += perLine) {
         const row = document.createElement('div');
@@ -254,22 +227,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
         row.appendChild(actions);
         sheet.appendChild(row);
       }
-    }
-    if (pageCount > 1) {
-      const foot = document.createElement('div');
-      foot.className = 'page-foot';
-      const p = document.createElement('button');
-      p.textContent = '‹ Previous page';
-      p.disabled = page === 0;
-      p.onclick = () => goTo(page - 1);
-      const label = document.createElement('span');
-      label.textContent = `${page + 1} / ${pageCount}`;
-      const n = document.createElement('button');
-      n.textContent = 'Next page ›';
-      n.disabled = page >= pageCount - 1;
-      n.onclick = () => goTo(page + 1);
-      foot.append(p, label, n);
-      sheet.appendChild(foot);
     }
     fitGlyphs();
   }
@@ -419,19 +376,6 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
     editor.classList.remove('open');
     render();
   };
-  function goTo(p) {
-    const hasInk = pads.some(x => x.strokes.length);
-    if (hasInk && !confirm('Your writing on this page will be cleared. Continue?')) {
-      pageSelect.value = page;
-      return;
-    }
-    page = p;
-    render();
-    window.scrollTo(0, 0);
-  }
-  prevBtn.onclick = () => goTo(page - 1);
-  nextBtn.onclick = () => goTo(page + 1);
-  pageSelect.onchange = () => goTo(Number(pageSelect.value));
   document.getElementById('undoBtn').onclick = () => {
     const p = history.pop();
     if (p) p.undo();
