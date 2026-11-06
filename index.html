@@ -54,17 +54,8 @@
   .cell { position: relative; aspect-ratio: 1 / 1; border: 1px solid var(--border); margin-left: -1px;
     background: var(--paper) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpath d='M50 0V100M0 50H100' stroke='%23e7b3b3' stroke-width='1' stroke-dasharray='4 4' vector-effect='non-scaling-stroke' fill='none'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
     touch-action: none; }
-  #sheet { touch-action: none; }
-  /* Scroll strip on the left edge: drag here to scroll (palm-free zone) */
-  #scrollStrip { position: fixed; left: 0; top: 0; bottom: 0; width: 44px; z-index: 4;
-    touch-action: pan-y; background: #efe9de; border-right: 1px solid #e0d8c8;
-    display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
-    gap: 8px; padding-bottom: 16px; }
-  #scrollStrip::before { content: ""; position: absolute; left: 50%; top: 50%; width: 6px; height: 80px;
-    transform: translate(-50%, -50%); border-radius: 3px;
-    background: repeating-linear-gradient(to bottom, #c9bfae 0 2px, transparent 2px 6px); }
-  #scrollStrip button { width: 36px; height: 36px; padding: 0; border-radius: 50%; font-size: 14px; position: relative; }
-  main#sheet { padding-left: 60px; }
+  /* Pencil-only mode: fingers scroll natively (smooth, with momentum) */
+  body.pen-only .cell { touch-action: pan-y; }
   .cell:first-child { margin-left: 0; }
   .glyph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     font-family: "Klee One", "Hiragino Mincho ProN", serif; line-height: 1; pointer-events: none;
@@ -115,10 +106,6 @@
   </div>
 </section>
 
-<nav id="scrollStrip" aria-label="Scroll">
-  <button id="scrollUp" aria-label="Scroll up">▲</button>
-  <button id="scrollDown" aria-label="Scroll down">▼</button>
-</nav>
 <main id="sheet"></main>
 
 <script src="words.js"></script>
@@ -130,7 +117,7 @@ import { getStroke } from 'https://cdn.jsdelivr.net/npm/perfect-freehand@1.2.2/+
 // Same settings as the perfect-freehand example app
 // (perfect-freehand-example.vercel.app "Reset Options" defaults).
 // Sizes are in SVG units where one character square = 100 units.
-const STROKE_SIZE = 6.75;       // default (100%) — 50% bigger than the example's size 8 scale
+const STROKE_SIZE = 4.5;        // ≈ the example's size 8 at its writing scale
 const STROKE_OPTIONS = {
   thinning: 0.75,
   streamline: 0.5,
@@ -388,26 +375,28 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
     return pad;
   }
 
-  // Palm rejection, done the way the perfect-freehand example does it:
-  // the writing area cancels EVERY native touch gesture (touch-action: none +
-  // preventDefault), so a resting palm can't scroll, zoom, long-press or
-  // interrupt the Pencil. In "Pencil only" mode, finger/palm pointers are
-  // simply ignored. Scrolling happens on the strip at the left edge
-  // (and the header), where your writing hand doesn't rest.
-  const blockTouch = e => {
+  // Touch handling. Fingers scroll natively (smooth, with momentum) via
+  // `touch-action: pan-y`. We only cancel the touches that should NOT scroll
+  // or trigger long-press: the Pencil, a resting palm, and any touch made
+  // while you are writing.
+  let lastPenAt = 0;
+  const penBusy = () => pads.some(p => p.current) || Date.now() - lastPenAt < 800;
+  const isPalm = t => (t.radiusX || 0) > 22 || (t.radiusY || 0) > 22;
+
+  sheet.addEventListener('touchstart', e => {
     if (e.target.closest('button')) return;      // keep row clear buttons tappable
-    e.preventDefault();
-  };
-  sheet.addEventListener('touchstart', blockTouch, { passive: false });
-  sheet.addEventListener('touchmove', blockTouch, { passive: false });
+    if (!penOnlyEl.checked) { e.preventDefault(); return; }  // fingers draw: no scrolling
+    const ts = [...e.changedTouches];
+    if (ts.some(t => t.touchType === 'stylus') || ts.some(isPalm) || penBusy()) e.preventDefault();
+  }, { passive: false });
+  sheet.addEventListener('touchmove', e => {
+    if (!penOnlyEl.checked) { e.preventDefault(); return; }
+    if ([...e.touches].some(t => t.touchType === 'stylus') || penBusy()) e.preventDefault();
+  }, { passive: false });
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('selectstart', e => { if (!e.target.closest || !e.target.closest('textarea')) e.preventDefault(); });
-  document.addEventListener('gesturestart', e => e.preventDefault());   // Safari pinch-zoom
-
-  // Scroll strip: native momentum scrolling by dragging, plus page-jump buttons
-  const jump = dir => window.scrollBy({ top: dir * window.innerHeight * 0.8, behavior: 'smooth' });
-  document.getElementById('scrollUp').onclick = () => jump(-1);
-  document.getElementById('scrollDown').onclick = () => jump(1);
+  document.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') lastPenAt = Date.now(); }, true);
+  document.addEventListener('pointerup', e => { if (e.pointerType === 'pen') lastPenAt = Date.now(); }, true);
 
   // Controls
   document.getElementById('editBtn').onclick = () => {
