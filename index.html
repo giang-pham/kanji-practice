@@ -33,6 +33,12 @@
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   label.toggle { display: inline-flex; gap: 6px; align-items: center; }
   .spacer { flex: 1; }
+  .pager { display: inline-flex; gap: 6px; align-items: center; }
+  .pager select { font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px;
+    border: 1px solid #d6cfc2; background: #fff; color: var(--ink); }
+  .pager button:disabled { opacity: 0.35; }
+  .page-foot { display: flex; justify-content: center; gap: 12px; align-items: center;
+    margin: 8px 0 40px; color: var(--muted); }
   #editor { display: none; padding: 12px 16px; border-bottom: 1px solid #e6e0d4; background: #fff; }
   #editor.open { display: block; }
   #editor textarea { width: 100%; min-height: 120px; font-size: 22px; padding: 10px;
@@ -72,6 +78,11 @@
   <button id="undoBtn">↶ Undo</button>
   <button id="clearAllBtn">Clear all</button>
   <label class="toggle"><input type="checkbox" id="penOnly" checked> Pencil only</label>
+  <span class="pager">
+    <button id="prevPage" aria-label="Previous page">‹</button>
+    <select id="pageSelect" aria-label="Page"></select>
+    <button id="nextPage" aria-label="Next page">›</button>
+  </span>
   <span class="spacer"></span>
   <button id="sizeDown">Small boxes</button>
   <button id="sizeUp">Big boxes</button>
@@ -83,15 +94,19 @@
   <div style="margin-top:10px; display:flex; gap:8px;">
     <button class="primary" id="applyBtn">Apply</button>
     <button id="cancelBtn">Cancel</button>
+    <span class="spacer"></span>
+    <button id="resetBtn">Reset to default list</button>
   </div>
 </section>
 
 <main id="sheet"></main>
 
+<script src="words.js"></script>
 <script>
 (() => {
-  const DEFAULT_WORDS = "弟\n兄";
+  const DEFAULT_WORDS = (window.DEFAULT_WORDS || "弟\n兄").trim();
   const WRITE_BOXES = 10;              // empty boxes after the two model boxes
+  const PER_PAGE = 30;
   const store = {
     get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -102,7 +117,12 @@
   const editor = document.getElementById('editor');
   const penOnlyEl = document.getElementById('penOnly');
 
-  let words = store.get('kanji.words', DEFAULT_WORDS);
+  // Saved edits override the default list; v2 key so the new default list shows up
+  let words = store.get('kanji.words.v2', DEFAULT_WORDS);
+  let page = Number(store.get('kanji.page', '0')) || 0;
+  const pageSelect = document.getElementById('pageSelect');
+  const prevBtn = document.getElementById('prevPage');
+  const nextBtn = document.getElementById('nextPage');
   // "big" mode shows fewer, larger boxes per visual line (wraps the 12 boxes)
   let scale = Number(store.get('kanji.scale', '0')); // 0 = all 12 on one line, 1 = 6 per line
   penOnlyEl.checked = store.get('kanji.penOnly', '1') === '1';
@@ -117,7 +137,22 @@
   function render() {
     pads.length = 0; history.length = 0;
     sheet.innerHTML = '';
-    const list = parseWords(words);
+    const all = parseWords(words);
+    const pageCount = Math.max(1, Math.ceil(all.length / PER_PAGE));
+    page = Math.min(Math.max(0, page), pageCount - 1);
+    store.set('kanji.page', String(page));
+    pageSelect.innerHTML = '';
+    for (let i = 0; i < pageCount; i++) {
+      const o = document.createElement('option');
+      o.value = i;
+      o.textContent = `Page ${i + 1} / ${pageCount}`;
+      pageSelect.appendChild(o);
+    }
+    pageSelect.value = page;
+    prevBtn.disabled = page === 0;
+    nextBtn.disabled = page >= pageCount - 1;
+
+    const list = all.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
     if (!list.length) {
       sheet.innerHTML = '<p class="empty">No words yet — tap “Edit words”.</p>';
       return;
@@ -157,6 +192,22 @@
         row.appendChild(actions);
         sheet.appendChild(row);
       }
+    }
+    if (pageCount > 1) {
+      const foot = document.createElement('div');
+      foot.className = 'page-foot';
+      const p = document.createElement('button');
+      p.textContent = '‹ Previous page';
+      p.disabled = page === 0;
+      p.onclick = () => goTo(page - 1);
+      const label = document.createElement('span');
+      label.textContent = `${page + 1} / ${pageCount}`;
+      const n = document.createElement('button');
+      n.textContent = 'Next page ›';
+      n.disabled = page >= pageCount - 1;
+      n.onclick = () => goTo(page + 1);
+      foot.append(p, label, n);
+      sheet.appendChild(foot);
     }
     fitGlyphs();
   }
@@ -319,10 +370,31 @@
   document.getElementById('cancelBtn').onclick = () => editor.classList.remove('open');
   document.getElementById('applyBtn').onclick = () => {
     words = wordsEl.value;
-    store.set('kanji.words', words);
+    store.set('kanji.words.v2', words);
     editor.classList.remove('open');
     render();
   };
+  document.getElementById('resetBtn').onclick = () => {
+    if (!confirm('Replace your list with the default list?')) return;
+    words = DEFAULT_WORDS;
+    try { localStorage.removeItem('kanji.words.v2'); } catch {}
+    wordsEl.value = words;
+    editor.classList.remove('open');
+    render();
+  };
+  function goTo(p) {
+    const hasInk = pads.some(x => x.strokes.length);
+    if (hasInk && !confirm('Your writing on this page will be cleared. Continue?')) {
+      pageSelect.value = page;
+      return;
+    }
+    page = p;
+    render();
+    window.scrollTo(0, 0);
+  }
+  prevBtn.onclick = () => goTo(page - 1);
+  nextBtn.onclick = () => goTo(page + 1);
+  pageSelect.onchange = () => goTo(Number(pageSelect.value));
   document.getElementById('undoBtn').onclick = () => {
     const p = history.pop();
     if (p) p.undo();
